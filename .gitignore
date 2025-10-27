@@ -41,6 +41,12 @@ node_modules/
 npm-debug.log
 yarn-error.log
 
+# Environment variables
+#
+.env
+.env.local
+.env.*.local
+
 # fastlane
 #
 # It is recommended to not store the screenshots in the git repo. Instead, use fastlane to re-generate the
@@ -73,3 +79,11 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# 민감한 정보가 포함된 파일들
+integrated-server/EC2_RDS_SETUP.md
+integrated-server/RASPBERRY_PI_SETUP.md
+integrated-server/INTEGRATION_COMPLETE.md
+integrated-server/README_tmp.html
+integrated-server/setup-rds.sh
+integrated-server/deploy-ec2.sh

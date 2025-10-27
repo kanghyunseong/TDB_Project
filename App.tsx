@@ -1,131 +1,133 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import 'react-native-get-random-values';
+import 'react-native-gesture-handler';
+import React, { useEffect } from 'react';
+import {NavigationContainer} from '@react-navigation/native';
+import RootNavigator from './src/navigations/root/RootNavigator';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import Toast, { BaseToast, ErrorToast } from 'react-native-toast-message';
+import { AuthProvider } from './src/contexts/AuthContext';
+import { ThemeProvider } from './src/contexts/ThemeContext';
+import { DrugProvider } from './src/contexts/DrugContext';
+import { SupplementProvider } from './src/contexts/SupplementContext';
 
-import React from 'react';
-import type {PropsWithChildren} from 'react';
-import {
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
+// Toast configuration with dark mode support
+const toastConfig = {
+  success: (props: any) => (
+    <BaseToast
+      {...props}
+      style={{ 
+        borderLeftColor: '#10B981',
+        marginTop: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 5,
+      }}
+      contentContainerStyle={{ paddingHorizontal: 15 }}
+      text1Style={{
+        fontSize: 15,
+        fontWeight: '600'
+      }}
+    />
+  ),
+  error: (props: any) => (
+    <ErrorToast
+      {...props}
+      style={{ 
+        borderLeftColor: '#EF4444',
+        marginTop: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 5,
+      }}
+      text1Style={{
+        fontSize: 15,
+        fontWeight: '600'
+      }}
+      text2Style={{
+        fontSize: 13,
+      }}
+    />
+  ),
+  warning: (props: any) => (
+    <BaseToast
+      {...props}
+      style={{ 
+        borderLeftColor: '#F59E0B', 
+        backgroundColor: '#FEF3C7',
+        marginTop: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 5,
+      }}
+      contentContainerStyle={{ paddingHorizontal: 15 }}
+      text1Style={{
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#92400E'
+      }}
+      text2Style={{
+        fontSize: 13,
+        color: '#78350F'
+      }}
+    />
+  ),
+  info: (props: any) => (
+    <BaseToast
+      {...props}
+      style={{ 
+        borderLeftColor: '#007AFF',
+        backgroundColor: '#E3F2FD',
+        marginTop: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 5,
+      }}
+      contentContainerStyle={{ paddingHorizontal: 15 }}
+      text1Style={{
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#1565C0'
+      }}
+      text2Style={{
+        fontSize: 13,
+        color: '#1976D2'
+      }}
+    />
+  ),
+};
 
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
-
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
-
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+function App() {
   return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
+    <SupplementProvider>
+    <DrugProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+      <AuthProvider>
+        <NavigationContainer>
+          <RootNavigator />
+          <Toast 
+            config={toastConfig}
+            position="top"
+            topOffset={60}
+            bottomOffset={100}
+            visibilityTime={4000}
+            autoHide={true}
+          />
+        </NavigationContainer>
+      </AuthProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
+    </DrugProvider>
+    </SupplementProvider>
   );
 }
-
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-  };
-
-  /*
-   * To keep the template simple and small we're adding padding to prevent view
-   * from rendering under the System UI.
-   * For bigger apps the recommendation is to use `react-native-safe-area-context`:
-   * https://github.com/AppAndFlow/react-native-safe-area-context
-   *
-   * You can read more about it here:
-   * https://github.com/react-native-community/discussions-and-proposals/discussions/827
-   */
-  const safePadding = '5%';
-
-  return (
-    <View style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        style={backgroundStyle}>
-        <View style={{paddingRight: safePadding}}>
-          <Header/>
-        </View>
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-            paddingHorizontal: safePadding,
-            paddingBottom: safePadding,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
-  },
-});
 
 export default App;
