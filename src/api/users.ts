@@ -77,10 +77,10 @@ export const userApi = {
   },
 
   // 🔥 디스펜서 등록
-  registerDispenser: async (userId: string, machine_id: string): Promise<ApiResponse<User>> => {
+  registerDispenser: async (userId: string, machine_id: string): Promise<ApiResponse<{ message: string; machine: { machine_id: string; group_id: string; max_slot: number } }>> => {
     try {
       console.log(`[API] 디스펜서 등록 요청: userId=${userId}, machine_id=${machine_id}`);
-      const response = await apiClient.post<ApiResponse<User>>(
+      const response = await apiClient.post<ApiResponse<{ message: string; machine: { machine_id: string; group_id: string; max_slot: number } }>>(
         '/api/user/register-dispenser',
         { userId, machine_id }
       );

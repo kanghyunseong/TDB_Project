@@ -3,7 +3,6 @@ import {
   StyleSheet,
   View,
   Text,
-  SafeAreaView,
   TouchableOpacity,
   ActivityIndicator,
   ScrollView,
@@ -12,6 +11,7 @@ import {
   Platform,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import colors from '../constants/colors';
 import Feather from 'react-native-vector-icons/Feather';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
@@ -19,7 +19,7 @@ import type { CompositeNavigationProp, RouteProp } from '@react-navigation/nativ
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { MainStackParamList, BottomTabParamList } from '../types/navigation';
-import { getFamilyMembers, getMedicineList, getMedicineSchedule, type FamilyMember, deleteMedicine, getSupplementList, deleteSupplement as deleteSupplementAPI } from '../api/family';
+import { getFamilyMembers, getMedicineList, getMedicineSchedule, type FamilyMember, deleteMedicine, getSupplementList, getSupplementSchedule, deleteSupplement as deleteSupplementAPI } from '../api/family';
 import { type Medicine, type MedicineSchedule, type User, NutritionalSupplement } from '../types/tdb';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
@@ -28,18 +28,33 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { getCurrentUser } from '../api/userStorage';
 import { useAuth } from '../contexts/AuthContext';
 import { userApi } from '../api/users';
+import { DEBOUNCE_DELAYS } from '../constants/timeouts';
 
 import { scheduleApi } from '../api/schedule'; 
 import { apiClient } from '../api/client';
 import { API_ENDPOINTS } from '../constants/api';
 import { StockWarningBanner } from '../components/StockWarningBanner';
-import { DrugInteractionValidator, type InteractionValidationResult } from '../utils/drugInteractionValidator';
 import DrugInteractionAlert from '../components/common/DrugInteractionAlert';
+import { useDrugInteractions } from '../hooks/useDrugInteractions';
+import { DrugInteractionValidator } from '../utils/drugInteractionValidator';
+import { useScheduleData } from '../hooks/useScheduleData';
+import { getTodayScheduleForMedicine, getTodayScheduleForSupplement } from '../utils/scheduleUtils';
+import MedicineItem from '../components/medicine/MedicineItem';
+import MedicineList from '../components/medicine/MedicineList';
 import { formatDateForDisplay } from '../utils/dateUtils';
 import { getMedicineRemainByMachine } from '../api/machine';
 import { scheduleDispense } from '../api/dispenser';
 import TodayScheduleDisplayModal from '../components/TodayScheduleDisplayModal';
 import MedicineExtensionModal from '../components/MedicineExtensionModal';
+import MemberSelector from '../components/member/MemberSelector';
+import DateHeader from '../components/common/DateHeader';
+import { MedicineCardSkeleton, SkeletonLoader } from '../components/common/SkeletonLoader';
+import SectionHeader from '../components/common/SectionHeader';
+import MedicineHeader from '../components/medicine/MedicineHeader';
+import SupplementItem from '../components/supplement/SupplementItem';
+import { logger } from '../utils/logger';
+import { useDoseCompletion } from '../hooks/useDoseCompletion';
+import { useMedicineActions } from '../hooks/useMedicineActions';
 
 type MainHomeScreenNavigationProp = CompositeNavigationProp<
   BottomTabNavigationProp<BottomTabParamList, 'Home'>,
@@ -59,6 +74,14 @@ function MainHomeScreen() {
   const [medicineList, setMedicineList] = useState<Medicine[]>([]);
   const [supplementList, setSupplementList] = useState<NutritionalSupplement[]>([]);
   const [loading, setLoading] = useState(true);
+  // 🔥 세분화된 로딩 상태 관리
+  const [loadingStates, setLoadingStates] = useState({
+    familyMembers: true,
+    medicines: true,
+    supplements: true,
+    schedules: true,
+    doseStatus: true,
+  });
   const [selectedMember, setSelectedMember] = useState<FamilyMember | null>(null);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [parentConnect, setParentConnect] = useState<string>('');
@@ -71,22 +94,43 @@ function MainHomeScreen() {
   const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
   const [editingSupplement, setEditingSupplement] = useState<NutritionalSupplement | null>(null);
   const [maxSlot, setMaxSlot] = useState(3); // 맥스 슬롯 설정 state 추가
-  const [dailySchedules, setDailySchedules] = useState<Record<string, { morning: number; afternoon: number; evening: number; total: number; weeklySchedule: Record<string, any> | null }>>({}); // 🔥 시간대별 복용량 state 추가
   const [userType, setUserType] = useState<'parent' | 'child' | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [showExpiredBanner, setShowExpiredBanner] = useState(true);
   const [medicineSchedules, setMedicineSchedules] = useState<Record<string, MedicineSchedule | null>>({});
-  const [completingDose, setCompletingDose] = useState<Record<string, boolean>>({});
-  // 🔥 복용 완료 상태 관리 state 추가
+  // 🔥 복용 완료 상태 관리 state 추가 (놓침 상태 포함)
   const [doseCompletionStatus, setDoseCompletionStatus] = useState<Record<string, {
     morning: boolean;
     afternoon: boolean;
     evening: boolean;
+    morningMissed?: boolean;
+    afternoonMissed?: boolean;
+    eveningMissed?: boolean;
   }>>({});
+  // 🔥 복용 완료 상태 로딩 추적 (깜빡임 방지)
+  const [loadingDoseStatus, setLoadingDoseStatus] = useState<Set<string>>(new Set());
   
-  // 🔥 약물 상호작용 검사 결과 state 추가
-  const [interactionResult, setInteractionResult] = useState<InteractionValidationResult | null>(null);
-  const [showInteractionAlert, setShowInteractionAlert] = useState(false);
+  // 🔥 컴포넌트 마운트 상태 추적 (unmount 시 요청 취소용)
+  const isMountedRef = useRef(true);
+  
+  // 🔥 약물 상호작용 검사 훅 사용
+  const {
+    interactionResult,
+    showInteractionAlert,
+    setShowInteractionAlert,
+    checkFamilyDrugInteractions,
+    invalidateCaches: invalidateInteractionCaches,
+  } = useDrugInteractions(familyMembers);
+  
+  // 🔥 스케줄 데이터 훅 사용
+  const {
+    dailySchedules,
+    supplementSchedules,
+    loadDailySchedule,
+    loadSupplementSchedule,
+    clearSchedule,
+    clearAllSchedules,
+  } = useScheduleData(selectedMember?.user_id || null, isMountedRef);
   
   // 🔥 배출 모달 상태 관리
   const [todayScheduleModalVisible, setTodayScheduleModalVisible] = useState(false);
@@ -96,6 +140,110 @@ function MainHomeScreen() {
   const [medicineToExtend, setMedicineToExtend] = useState<Medicine | null>(null);
 
   const { logout } = useAuth();
+
+  // 🔥 멤버 선택 핸들러 (훅보다 먼저 정의 필요)
+  const handleSelectMember = useCallback(async (member: FamilyMember) => {
+    try {
+      logger.log('멤버 선택 시도', { name: member.name });
+      const userJson = await AsyncStorage.getItem(USER_KEY);
+      if (!userJson) {
+        throw new Error('사용자 정보를 찾을 수 없습니다.');
+      }
+      
+      const user = JSON.parse(userJson) as User;
+      if (user.role === 'child' && member.role === 'parent') {
+        Toast.show({
+          type: 'error',
+          text1: '서브 계정으로는 메인 계정을 선택할 수 없습니다.',
+          position: 'bottom',
+        });
+        return;
+      }
+      
+      setSelectedMember(member);
+      setIsExpanded(false);
+      await AsyncStorage.setItem(SELECTED_MEMBER_KEY, member.user_id);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '멤버 선택 실패';
+      Toast.show({
+        type: 'error',
+        text1: errorMessage,
+      });
+    }
+  }, []);
+
+  // 🔥 복용 완료 상태 개별 조회 함수 (상태 반환하도록 수정)
+  const loadDoseCompletionStatus = useCallback(async (medicineId: string, userId: string): Promise<{
+    morning: boolean;
+    afternoon: boolean;
+    evening: boolean;
+    morningMissed?: boolean;
+    afternoonMissed?: boolean;
+    eveningMissed?: boolean;
+  }> => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await apiClient.get(
+        `${API_ENDPOINTS.DOSE_HISTORY.TODAY_STATUS}?user_id=${userId}&medi_id=${medicineId}&date=${today}`
+      );
+
+      if (response.data.success && response.data.data) {
+        const status = response.data.data;
+        
+        // 🔥 서버 응답 형식 확인 (completion_status 또는 직접 반환)
+        const completionStatus = {
+          morning: status.completion_status?.morning || status.morning || false,
+          afternoon: status.completion_status?.afternoon || status.afternoon || false,
+          evening: status.completion_status?.evening || status.evening || false,
+          // 🔥 놓침 상태도 포함
+          morningMissed: status.morningMissed || false,
+          afternoonMissed: status.afternoonMissed || false,
+          eveningMissed: status.eveningMissed || false,
+        };
+        
+        // 🔥 상태 업데이트는 호출하는 쪽에서 배치로 처리
+        return completionStatus;
+      }
+      return { morning: false, afternoon: false, evening: false, morningMissed: false, afternoonMissed: false, eveningMissed: false };
+    } catch (error) {
+      logger.error('복용 완료 상태 조회 실패', error);
+      return { morning: false, afternoon: false, evening: false, morningMissed: false, afternoonMissed: false, eveningMissed: false };
+    }
+  }, []);
+
+  // 🔥 복용 완료 훅 사용
+  const {
+    completingDose,
+    handleCompleteDose,
+    handleCompleteDoseWithTarget,
+    handleCompleteDailySchedule,
+  } = useDoseCompletion({
+    selectedMember,
+    dailySchedules,
+    loadDailySchedule,
+    loadDoseCompletionStatus,
+    setDoseCompletionStatus,
+    handleSelectMember,
+  });
+
+  // 🔥 약물/영양제 액션 훅 사용
+  const {
+    handleDeleteMedicine,
+    handleDeleteSupplement,
+  } = useMedicineActions({
+    setMedicineList,
+    setSupplementList,
+    invalidateInteractionCaches,
+    checkFamilyDrugInteractions: async (forceRefresh?: boolean) => {
+      await checkFamilyDrugInteractions(forceRefresh);
+    },
+    // 🔥 약물 삭제 시 스케줄 캐시 무효화 함수 전달
+    clearScheduleCache: (medicineId: string, userId: string) => {
+      const scheduleKey = `${medicineId}_${userId}`;
+      clearSchedule(scheduleKey);
+      console.log(`[MainHomeScreen] 스케줄 캐시 무효화: ${scheduleKey}`);
+    },
+  });
 
   // 🔥 복용 기간 만료 임박 체크 함수
   const checkMedicineExpiry = (medicine: Medicine): { isExpiring: boolean; daysRemaining: number } => {
@@ -143,125 +291,35 @@ function MainHomeScreen() {
       setExtensionModalVisible(true);
     }
   };
-
-  // 🔥 조회 중인 스케줄을 추적하는 ref 추가
-  const loadingSchedules = useRef<Set<string>>(new Set());
   
-  // 🔥 가족 전체 약물 상호작용 검사 함수
-  const checkFamilyDrugInteractions = async () => {
-    try {
-      console.log('🔍 [FamilyDrugInteraction] 가족 전체 약물 상호작용 검사 시작');
-      
-      // 1. 모든 가족 구성원의 약물 수집
-      const allFamilyMedicines: Medicine[] = [];
-      
-      for (const member of familyMembers) {
-        try {
-          console.log(`🔍 [FamilyDrugInteraction] ${member.name}(${member.role})의 약물 조회 중...`);
-          const response = await getMedicineList(member.user_id);
-          
-          if (response.success && response.data) {
-            // 각 약물에 소유자 정보 추가
-            const memberMedicines = response.data.map(medicine => ({
-              ...medicine,
-              ownerName: member.name,
-              ownerRole: member.role,
-              ownerId: member.user_id
-            }));
-            
-            allFamilyMedicines.push(...memberMedicines);
-            console.log(`✅ [FamilyDrugInteraction] ${member.name}: ${memberMedicines.length}개 약물 수집`);
-          }
-        } catch (error) {
-          console.error(`🔥 [FamilyDrugInteraction] ${member.name} 약물 조회 실패:`, error);
-        }
-      }
-      
-      console.log(`🔍 [FamilyDrugInteraction] 가족 전체 약물 수: ${allFamilyMedicines.length}개`);
-      
-      if (allFamilyMedicines.length < 2) {
-        console.log('🔍 [FamilyDrugInteraction] 가족 전체 약물이 2개 미만이므로 상호작용 검사 생략');
-        setInteractionResult(null);
-        setShowInteractionAlert(false);
-        return null;
-      }
-      
-      // 2. 상호작용 검사 실행
-      const result = await DrugInteractionValidator.validateDrugInteractions(allFamilyMedicines);
-      
-      // 3. 상호작용이 있는 경우 소유자 정보 포함하여 결과 처리
-      if (result.hasInteractions) {
-        console.log('⚠️ [FamilyDrugInteraction] 가족 간 약물 상호작용 발견!');
-        
-        // 상호작용 결과에 소유자 정보 추가
-        const enhancedInteractions = result.interactions.map(interaction => {
-          const drugAMedicine = allFamilyMedicines.find(med => med.name === interaction.drugA);
-          const drugBMedicine = allFamilyMedicines.find(med => med.name === interaction.drugB);
-          
-          return {
-            ...interaction,
-            drugAOwner: drugAMedicine ? { name: (drugAMedicine as any).ownerName, role: (drugAMedicine as any).ownerRole } : null,
-            drugBOwner: drugBMedicine ? { name: (drugBMedicine as any).ownerName, role: (drugBMedicine as any).ownerRole } : null
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // 컴포넌트 unmount 시 스케줄 캐시 정리
+      clearAllSchedules();
           };
-        });
-        
-        const enhancedResult = {
-          ...result,
-          interactions: enhancedInteractions
-        };
-        
-        setInteractionResult(enhancedResult);
-        setShowInteractionAlert(true);
-        
-        // 심각한 상호작용이 있는 경우 강제 알림
-        if (result.criticalCount > 0) {
-          Toast.show({
-            type: 'error',
-            text1: '⚠️ 가족 간 심각한 약물 상호작용 발견',
-            text2: '즉시 의사와 상담하세요.',
-            position: 'top',
-            visibilityTime: 6000,
-          });
-        } else if (result.warningCount > 0) {
-          Toast.show({
-            type: 'warning',
-            text1: '⚠️ 가족 간 약물 상호작용 주의',
-            text2: '복용 전 약사와 상담하세요.',
-            position: 'top',
-            visibilityTime: 5000,
-          });
-        }
-        
-        return enhancedResult;
-      } else {
-        console.log('✅ [FamilyDrugInteraction] 가족 간 상호작용 없음');
-        setInteractionResult(null);
-        setShowInteractionAlert(false);
-        return null;
-      }
-      
-    } catch (error) {
-      console.error('🔥 [FamilyDrugInteraction] 가족 약물 상호작용 검사 중 오류:', error);
-      return null;
-    }
-  };
+  }, [clearAllSchedules]);
 
   // 🔥 개별 사용자 약물 상호작용 검사 함수 (기존 함수 유지)
   const checkDrugInteractions = async (medicines: Medicine[]) => {
     try {
-      console.log('🔍 [DrugInteraction] 개별 사용자 상호작용 검사 시작:', medicines.length, '개 약물');
-      
+      logger.log('개별 사용자 상호작용 검사 시작', { medicineCount: medicines.length });
+
       if (medicines.length < 2) {
-        console.log('🔍 [DrugInteraction] 약물이 2개 미만이므로 상호작용 검사 생략');
+        logger.debug('약물이 2개 미만이므로 상호작용 검사 생략');
         return null;
       }
       
       const result = await DrugInteractionValidator.validateDrugInteractions(medicines);
-      console.log(`🔍 [DrugInteraction] 개별 검사 결과:`, result.hasInteractions ? `${result.interactions.length}건 발견` : '상호작용 없음');
+      logger.debug('개별 검사 결과', {
+        hasInteractions: result.hasInteractions,
+        interactionsCount: result.interactions?.length || 0
+      });
       
       return result;
     } catch (error) {
-      console.error('🔥 [DrugInteraction] 개별 상호작용 검사 중 오류:', error);
+      logger.error('개별 상호작용 검사 중 오류', error);
       return null;
     }
   };
@@ -269,12 +327,12 @@ function MainHomeScreen() {
   // 🔥 약물별 warning 상태 업데이트 함수
   const updateMedicineWarnings = async (medicines: Medicine[], interactionResult: any) => {
     if (!interactionResult) {
-      console.log('🔍 [Warning] 상호작용 결과가 없어서 warning 업데이트 생략');
+      logger.debug('상호작용 결과가 없어서 warning 업데이트 생략');
       return;
     }
 
     try {
-      console.log('🔍 [Warning] 약물별 warning 상태 업데이트 시작');
+      logger.log('약물별 warning 상태 업데이트 시작');
       
       // 상호작용이 있는 약물들의 이름 수집
       const dangerousMedicineNames = new Set<string>();
@@ -291,7 +349,9 @@ function MainHomeScreen() {
         });
       }
       
-      console.log('🔍 [Warning] 상호작용이 있는 약물명들:', Array.from(dangerousMedicineNames));
+      logger.debug('상호작용이 있는 약물명들', { 
+        medicineNames: Array.from(dangerousMedicineNames) 
+      });
       
       // 약물명을 medi_id로 매핑
       const dangerousMedicineIds = new Set<string>();
@@ -301,7 +361,9 @@ function MainHomeScreen() {
         }
       });
       
-      console.log('🔍 [Warning] 상호작용이 있는 약물 ID들:', Array.from(dangerousMedicineIds));
+      logger.debug('상호작용이 있는 약물 ID들', { 
+        medicineIds: Array.from(dangerousMedicineIds) 
+      });
       
       // 각 약물의 warning 상태 업데이트
       const updatePromises = medicines.map(async (medicine) => {
@@ -337,44 +399,112 @@ function MainHomeScreen() {
   const navigation = useNavigation<MainHomeScreenNavigationProp>();
   const route = useRoute<RouteProp<MainStackParamList, 'Home'>>();
 
-  // 🔥 약물 목록이 변경될 때마다 스케줄과 복용 완료 상태 로드
+  // 🔥 복용 완료 상태 일괄 조회 함수 추가
+  const loadAllDoseCompletionStatus = useCallback(async (userId: string, medicineIds: string[]) => {
+    try {
+      if (medicineIds.length === 0) return;
+      
+      const today = new Date().toISOString().split('T')[0];
+      
+      // 🔥 medi_id 없이 호출하면 모든 약물의 상태를 한 번에 조회
+      const response = await apiClient.get(API_ENDPOINTS.DOSE_HISTORY.TODAY_STATUS, {
+        params: {
+          user_id: userId,
+          date: today
+          // medi_id를 전달하지 않으면 모든 약물 상태 반환
+        }
+      });
+      
+      if (response.data.success && response.data.data) {
+        const statusData = response.data.data;
+        
+        // API 응답이 배열인 경우 (모든 약물 상태)
+        if (Array.isArray(statusData)) {
+          const newStatus: Record<string, {
+            morning: boolean;
+            afternoon: boolean;
+            evening: boolean;
+          }> = {};
+          
+          statusData.forEach((item: any) => {
+            if (item.medi_id) {
+              const statusKey = `${item.medi_id}_${userId}`;
+              newStatus[statusKey] = {
+                morning: item.morning || false,
+                afternoon: item.afternoon || false,
+                evening: item.evening || false
+              };
+            }
+          });
+          
+          setDoseCompletionStatus(prev => ({ ...prev, ...newStatus }));
+          
+          if (__DEV__) {
+            console.log(`✅ [DoseStatus] 일괄 조회 완료: ${Object.keys(newStatus).length}개 약물`);
+          }
+        }
+      }
+    } catch (error: any) {
+      if (__DEV__) {
+        logger.error('일괄 조회 에러', error);
+      }
+      // 에러 발생 시 개별 조회로 폴백하지 않음 (성능 저하 방지)
+    }
+  }, []);
+
+  // 🔥 약물 목록이 변경될 때마다 스케줄과 복용 완료 상태 로드 (최적화)
   useEffect(() => {
     if (medicineList.length > 0 && selectedMember) {
-      console.log(`🔄 [Effect] 약물 목록 변경 감지 (${medicineList.length}개) - 스케줄 및 복용 상태 로드`);
+      if (__DEV__) {
+      logger.debug('약물 목록 변경 감지', { medicineCount: medicineList.length });
+      }
       
       // 🔥 백그라운드에서 비동기적으로 로드 (UI 블로킹 방지)
       const loadAllMedicineData = async () => {
         try {
+          const medicineIds = medicineList.map(m => m.medi_id).filter(Boolean) as string[];
+          
+          // 🔥 1. 복용 완료 상태 일괄 조회 (1회 API 호출)
+          await loadAllDoseCompletionStatus(selectedMember.user_id, medicineIds);
+          
+          // 🔥 2. 스케줄은 병렬로 조회 (이미 캐싱되어 있으면 즉시 반환)
           await Promise.all(
             medicineList.map(async (medicine: Medicine) => {
               try {
-                // 스케줄과 복용 완료 상태를 병렬로 로드
-                await Promise.all([
-                  loadDailySchedule(medicine.medi_id, selectedMember.user_id),
-                  loadDoseCompletionStatus(medicine.medi_id, selectedMember.user_id)
-                ]);
-                console.log(`✅ [Effect] ${medicine.name} 데이터 로드 완료`);
+                await loadDailySchedule(medicine.medi_id, selectedMember.user_id);
+                if (__DEV__) {
+                console.log(`✅ [Effect] ${medicine.name} 스케줄 로드 완료`);
+                }
               } catch (error) {
-                console.error(`❌ [Effect] ${medicine.name} 데이터 로드 실패:`, error);
+                if (__DEV__) {
+                console.error(`❌ [Effect] ${medicine.name} 스케줄 로드 실패:`, error);
+                }
               }
             })
           );
+          
+          if (__DEV__) {
           console.log(`✅ [Effect] 모든 약물 데이터 로드 완료`);
+          }
         } catch (error) {
+          if (__DEV__) {
           console.error(`❌ [Effect] 전체 약물 데이터 로드 실패:`, error);
+          }
         }
       };
       
       loadAllMedicineData();
     }
-  }, [medicineList, selectedMember]);
+  }, [medicineList, selectedMember, loadAllDoseCompletionStatus, loadDailySchedule]);
 
   // 🔥 권한 체크 함수
-  const getOwnerInfo = (medicine: Medicine) => {
+  // 🔥 getOwnerInfo를 useCallback으로 메모이제이션
+  const getOwnerInfo = useCallback((medicine: Medicine) => {
     // 새로운 API에서 직접 가져온 권한 정보 사용
-    const permission = (medicine as any).permission || 'own';
+    // 🔥 permission이 없을 때 기본값을 'own'으로 설정하지 않음 (권한 정보가 없으면 undefined 처리)
+    const permission = (medicine as any).permission;
     const isOwn = permission === 'own';
-    const isManaged = permission === 'manage'; // 부모가 관리하는 타인 약물
+    const isManaged = permission === 'manage'; // 보호자가 관리하는 타인 약물
     const ownerInfo = (medicine as any).ownerInfo;
     
     return {
@@ -383,238 +513,89 @@ function MainHomeScreen() {
       isCommon: ownerInfo?.isCommon || false,
       ownerName: ownerInfo?.ownerName || ''
     };
-  };
+  }, []);
 
-  // 🔥 복용 완료 상태 조회 함수 추가
-  const loadDoseCompletionStatus = async (medicineId: string, userId: string) => {
+  // 🔥 복용 완료 상태 조회 함수는 위에서 useCallback으로 정의됨 (중복 제거 완료)
+
+
+  // 🔥 점진적 로딩: 중요 데이터 먼저 로드, 나머지는 백그라운드
+  const loadInitialData = useCallback(async () => {
     try {
-      console.log(`🔍 [DoseStatus] 복용 완료 상태 조회: ${medicineId}, ${userId}`);
-      
-      // 오늘 날짜 형식으로 변환
-      const today = new Date().toISOString().split('T')[0];
-      
-      // ⚠️ 임시: 복용 완료 상태 조회 API가 구현되지 않았으므로 기본값 반환
-      // 추후 백엔드에서 해당 API가 구현되면 실제 조회로 변경 예정
-      
-      // 🔥 새로 구현된 today-status API 사용
-      const response = await apiClient.get(API_ENDPOINTS.DOSE_HISTORY.TODAY_STATUS, {
-        params: {
-          user_id: userId,
-          medi_id: medicineId,
-          date: today
-        }
-      });
-      
-      if (response.data.success && response.data.data) {  
-        const statusData = response.data.data;
-        const statusKey = `${medicineId}_${userId}`;
-        
-        // API 응답 구조에 따라 처리
-        let status = {
-          morning: false,
-          afternoon: false,
-          evening: false
-        };
-        
-        if (statusData.completion_status) {
-          // 단일 약물 응답
-          status = statusData.completion_status;
-        } else if (Array.isArray(statusData)) {
-          // 여러 약물 응답에서 해당 약물 찾기
-          const medicineStatus = statusData.find((item: any) => item.medi_id === medicineId);
-          if (medicineStatus) {
-            status = {
-              morning: medicineStatus.morning || false,
-              afternoon: medicineStatus.afternoon || false,
-              evening: medicineStatus.evening || false
-            };
-          }
-        }
-        
-        console.log(`✅ [DoseStatus] ${medicineId} 복용 완료 상태:`, status);
-        
-        // 상태 업데이트
-        setDoseCompletionStatus(prev => ({
-          ...prev,
-          [statusKey]: status
-        }));
-        
-        return status;
-      } else {
-        console.log(`⚠️ [DoseStatus] 복용 기록 없음: ${medicineId}`);
-        return { morning: false, afternoon: false, evening: false };
+      const user = await getCurrentUser();
+      if (!user) {
+        throw new Error('사용자 정보를 찾을 수 없습니다.');
       }
-    } catch (error: any) {
-      console.error(`🔥 [DoseStatus] 복용 완료 상태 조회 에러:`, error);
-      // 🔥 404 에러인 경우 해당 API가 구현되지 않았거나 기록이 없음을 의미
-      if (error?.response?.status === 404) {
-        console.log(`⚠️ [DoseStatus] 복용 기록이 없거나 API가 구현되지 않음. 기본값 사용.`);
-      } else {
-        console.log(`⚠️ [DoseStatus] 네트워크 오류 또는 기타 문제. 기본값 사용.`);
+
+      setUserType(user.role === 'parent' ? 'parent' : 'child');
+      
+      // 🔥 1단계: 가족 구성원 목록 먼저 로드 (캐시 확인)
+      const { CacheManager } = await import('../utils/cache');
+      const { CACHE_KEYS, CACHE_DURATION } = await import('../utils/cache');
+      
+      let cachedMembers = null;
+      if (user.group_id) {
+        cachedMembers = await CacheManager.get<FamilyMember[]>(CACHE_KEYS.FAMILY_MEMBERS(user.group_id));
       }
-      return { morning: false, afternoon: false, evening: false };
-    }
-  };
-
-  // 🔥 시간대별 복용량 조회 함수 - 개선된 버전
-  const loadDailySchedule = async (medicineId: string, userId: string) => {
-    const scheduleKey = `${medicineId}_${userId}`;
-    
-    // 이미 조회 중이거나 완료된 경우 중복 호출 방지
-    if (loadingSchedules.current.has(scheduleKey) || dailySchedules[scheduleKey]) {
-      return;
-    }
-    
-    // 조회 중임을 표시
-    loadingSchedules.current.add(scheduleKey);
-    
-    try {
-      console.log(`🔍 [성능개선] 시간대별 복용량 조회: medicineId=${medicineId}, userId=${userId}`);
       
-      // 🔥 현재 선택된 사용자와 조회하려는 사용자가 일치하는지 확인
-      if (userId !== selectedMember?.user_id) {
-        console.log(`⚠️ 사용자 불일치 감지 - 요청 취소: 요청=${userId}, 선택됨=${selectedMember?.user_id}`);
-        loadingSchedules.current.delete(scheduleKey);
-          return;
+      if (cachedMembers && cachedMembers.length > 0) {
+        // 캐시된 데이터로 즉시 표시
+        setFamilyMembers(cachedMembers);
+        const savedId = await AsyncStorage.getItem(SELECTED_MEMBER_KEY);
+        const savedMember = cachedMembers.find(m => m.user_id === savedId);
+        if (savedMember) {
+          setSelectedMember(savedMember);
         }
-
-      // 🔥 integrated-server와 호환되는 스케줄 조회 API 사용
-      const scheduleResult: any = await getMedicineSchedule(medicineId, userId);
+        // 🔥 로딩 상태 업데이트
+        setLoadingStates(prev => ({ ...prev, familyMembers: false }));
+        setLoading(false); // 🔥 즉시 로딩 완료 표시
+      }
       
-      if (scheduleResult && typeof scheduleResult === 'object') {
-        console.log(`🔍 [성능개선] 스케줄 조회 성공:`, scheduleResult);
-        
-        // 🔥 서버에서 반환하는 시간대별 복용량 사용
-        let morningDose = 0, afternoonDose = 0, eveningDose = 0;
-        let weeklySchedule: Record<string, {
-          morning: boolean;
-          afternoon: boolean;
-          evening: boolean;
-          morningDose: number;
-          afternoonDose: number;
-          eveningDose: number;
-        }> | null = null;
-        
-        // 🔥 1. 서버가 시간대별 복용량을 제공하는 경우 우선 사용
-        if (scheduleResult.morningDose !== undefined) {
-          morningDose = parseInt(scheduleResult.morningDose.toString()) || 0;
-        }
-        if (scheduleResult.afternoonDose !== undefined) {
-          afternoonDose = parseInt(scheduleResult.afternoonDose.toString()) || 0;
-        }
-        if (scheduleResult.eveningDose !== undefined) {
-          eveningDose = parseInt(scheduleResult.eveningDose.toString()) || 0;
-        }
-        
-        // 🔥 요일별 스케줄 정보 추출
-        if (scheduleResult.schedule && typeof scheduleResult.schedule === 'object') {
-          weeklySchedule = {};
-          const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-          
-          dayNames.forEach(day => {
-            if (scheduleResult.schedule[day]) {
-              const daySchedule = scheduleResult.schedule[day];
-              if (weeklySchedule) {
-                weeklySchedule[day] = {
-                  morning: daySchedule.morning || false,
-                  afternoon: daySchedule.afternoon || false,
-                  evening: daySchedule.evening || false,
-                  morningDose: daySchedule.morningDose || morningDose,
-                  afternoonDose: daySchedule.afternoonDose || afternoonDose,
-                  eveningDose: daySchedule.eveningDose || eveningDose,
-                };
+      // 🔥 2단계: 백그라운드에서 최신 데이터 로드
+      const loadLatestData = async () => {
+        if (user.role === 'parent') {
+          setParentConnect(user.group_id || '');
+        } else {
+          const parentMember = cachedMembers?.find(m => m.role === 'parent');
+          if (parentMember) {
+            setParentConnect(parentMember.user_id);
+          } else {
+            // 부모 정보 조회
+            const familyResponse = await getFamilyMembers();
+            if (familyResponse.success && familyResponse.data) {
+              const parent = familyResponse.data.find(m => m.role === 'parent');
+              if (parent) {
+                setParentConnect(parent.user_id);
               }
             }
-          });
-          
-          console.log(`📅 [${medicineId}] 요일별 스케줄:`, weeklySchedule);
-        }
-        
-        // 🔥 2. 시간대별 복용량이 없는 경우 기존 방식으로 fallback
-        if (morningDose === 0 && afternoonDose === 0 && eveningDose === 0) {
-          console.log('🔍 [성능개선] 시간대별 복용량이 없어서 기존 방식 사용');
-          
-          const doseCount = parseInt((scheduleResult.doseCount || '0').toString()) || 0;
-          
-          // 📊 스케줄이 설정된 시간대만 복용량 설정 (성능 최적화)
-          const hasSchedule = scheduleResult.schedule;
-          if (hasSchedule && typeof hasSchedule === 'object') {
-            // 간단한 체크: 어느 하나라도 morning이 true면 설정
-            const hasAnyMorning = Object.values(hasSchedule).some((day: any) => day?.morning);
-            const hasAnyAfternoon = Object.values(hasSchedule).some((day: any) => day?.afternoon);
-            const hasAnyEvening = Object.values(hasSchedule).some((day: any) => day?.evening);
-            
-            if (hasAnyMorning) morningDose = doseCount;
-            if (hasAnyAfternoon) afternoonDose = doseCount;
-            if (hasAnyEvening) eveningDose = doseCount;
           }
         }
         
-        const scheduleData = {
-          morning: morningDose,
-          afternoon: afternoonDose,
-          evening: eveningDose,
-          total: morningDose + afternoonDose + eveningDose,
-          weeklySchedule: weeklySchedule // 🔥 요일별 스케줄 정보 추가
-        };
-        
-        setDailySchedules(prev => ({
-          ...prev,
-          [scheduleKey]: scheduleData
-        }));
-        
-        console.log(`✅ [성능개선] 시간대별 복용량 설정 완료:`, {
-          medicineId,
-          userName: selectedMember?.name,
-          ...scheduleData,
-        });
-            } else {
-        console.log(`❌ [성능개선] 시간대별 복용량 조회 실패 - null 응답`);
-        // 실패한 경우에도 빈 데이터로 저장하여 재시도 방지
-        const emptyScheduleData = {
-          morning: 0,
-          afternoon: 0,
-          evening: 0,
-          total: 0,
-          weeklySchedule: null
-        };
-        setDailySchedules(prev => ({
-          ...prev,
-          [scheduleKey]: emptyScheduleData
-        }));
-      }
-    } catch (error: unknown) {
-      // 🔥 에러 발생 시 빈 데이터로 설정
-      console.log(`❌ [loadDailySchedule] 에러 발생 - 빈 스케줄로 설정:`, error);
-      const emptyScheduleData = {
-        morning: 0,
-        afternoon: 0,
-        evening: 0,
-        total: 0,
-        weeklySchedule: null
+        // 최신 가족 구성원 정보 로드
+        await loadFamilyMembers();
       };
-      setDailySchedules(prev => ({
-        ...prev,
-        [scheduleKey]: emptyScheduleData
-      }));
-    } finally {
-      // 조회 완료 표시
-      loadingSchedules.current.delete(scheduleKey);
+      
+      // 백그라운드에서 실행 (UI 블로킹 없음)
+      loadLatestData();
+      
+    } catch (error) {
+      console.error('초기 데이터 로드 실패:', error);
+      setError(error instanceof Error ? error.message : '데이터 로드 실패');
+      setLoading(false);
     }
-  };
+  }, []);
 
   const loadParentConnectID = async () => {
     try {
-      console.log('🔍 [MainHomeScreen] 부모 계정 정보 로딩 시작');
+      logger.log('보호자 계정 정보 로딩 시작');
       const currentUserData = await AsyncStorage.getItem('@user');
-      console.log('🔍 [MainHomeScreen] AsyncStorage 사용자 데이터:', currentUserData);
+      logger.debug('AsyncStorage 사용자 데이터', { hasData: !!currentUserData });
       
       if (!currentUserData) {
         throw new Error('저장된 사용자 정보가 없습니다.');
       }
 
       const currentUser = JSON.parse(currentUserData);
-      console.log('🔍 [MainHomeScreen] 파싱된 현재 사용자 정보:', {
+      logger.debug('파싱된 현재 사용자 정보', {
         user_id: currentUser.user_id,
         name: currentUser.name,
         role: currentUser.role,
@@ -623,23 +604,24 @@ function MainHomeScreen() {
         k_uid: currentUser.k_uid
       });
 
-      // 부모 계정 찾기
-      console.log('가족 구성원 조회 API 호출 시작');
+      // 보호자 계정 찾기
+      logger.log('가족 구성원 조회 API 호출 시작');
       const parentMemberResponse = await getFamilyMembers();
-      console.log('부모 멤버 응답:', parentMemberResponse);
-      console.log('응답 타입:', typeof parentMemberResponse);
-      console.log('응답 success:', parentMemberResponse?.success);
-      console.log('응답 data:', parentMemberResponse?.data);
-      console.log('응답 error:', parentMemberResponse?.error);
+      logger.debug('보호자 멤버 응답', {
+        success: parentMemberResponse?.success,
+        hasData: !!parentMemberResponse?.data,
+        error: parentMemberResponse?.error
+      });
 
       if (!parentMemberResponse.success || !parentMemberResponse.data) {
-        console.log('가족 구성원 조회 실패 - 상세정보:');
-        console.log('  success:', parentMemberResponse?.success);
-        console.log('  data:', parentMemberResponse?.data);
-        console.log('  error:', parentMemberResponse?.error);
+        logger.warn('가족 구성원 조회 실패', {
+          success: parentMemberResponse?.success,
+          data: parentMemberResponse?.data,
+          error: parentMemberResponse?.error
+        });
         
         // 에러 메시지에 따라 다른 처리
-        const errorMessage = parentMemberResponse?.error?.message || '부모 계정을 찾을 수 없습니다.';
+        const errorMessage = parentMemberResponse?.error?.message || '보호자 계정을 찾을 수 없습니다.';
         
         if (errorMessage.includes('연결 정보') || errorMessage.includes('디스펜서')) {
           // 디스펜서 연결이 필요한 경우
@@ -653,30 +635,43 @@ function MainHomeScreen() {
       }
 
       const familyData = parentMemberResponse.data;
-      console.log('가족 데이터:', familyData);
-      console.log('가족 데이터 타입:', typeof familyData);
-      console.log('가족 데이터가 배열인가:', Array.isArray(familyData));
+      logger.debug('가족 데이터', {
+        type: typeof familyData,
+        isArray: Array.isArray(familyData),
+        length: Array.isArray(familyData) ? familyData.length : undefined
+      });
       
-      const parentMember = Array.isArray(familyData) 
-        ? familyData.find(member => member.role === 'parent')
-        : familyData;
+      // 🔥 familyData가 null/undefined인지 확인
+      if (!familyData) {
+        logger.error('가족 데이터가 null 또는 undefined');
+        setError('가족 정보를 불러올 수 없습니다.');
+        return;
+      }
+      
+      let parentMember: any = null;
+      if (Array.isArray(familyData)) {
+        parentMember = familyData.find((member: any) => member && member.role === 'parent');
+      } else if (familyData && typeof familyData === 'object' && 'role' in familyData) {
+        parentMember = (familyData as any).role === 'parent' ? familyData : null;
+      }
 
-      console.log('찾은 부모 멤버:', parentMember);
-
-      if (!parentMember) {
-        console.log('부모 멤버를 찾을 수 없음');
-        console.log('가족 데이터 전체:', JSON.stringify(familyData, null, 2));
-        if (Array.isArray(familyData)) {
-          familyData.forEach((member, index) => {
-            console.log(`  멤버 ${index}:`, {
-              user_id: member.user_id,
-              name: member.name,
-              role: member.role,
-              group_id: member.group_id
-            });
-          });
-        }
-        throw new Error('부모 계정을 찾을 수 없습니다.');
+      logger.debug('찾은 보호자 멤버', { 
+        found: !!parentMember,
+        user_id: parentMember?.user_id 
+      });
+      
+      if (!parentMember || !parentMember.user_id) {
+        logger.warn('보호자 멤버를 찾을 수 없음', {
+          familyDataLength: Array.isArray(familyData) ? familyData.length : 0,
+          members: Array.isArray(familyData) ? familyData.map((m: any, i: number) => ({
+            index: i,
+            user_id: m.user_id,
+            name: m.name,
+            role: m.role,
+            group_id: m.group_id
+          })) : []
+        });
+        throw new Error('보호자 계정을 찾을 수 없습니다.');
       }
 
       if (parentMember.group_id) {
@@ -685,9 +680,13 @@ function MainHomeScreen() {
         
         // 디스펜서 정보 조회하여 maxSlot 설정  
         try {
-          console.log('디스펜서 정보 조회 시작');
+          logger.log('디스펜서 정보 조회 시작');
           const dispenserResponse = await userApi.getDispenserInfo(parentMember.user_id);
-          console.log('디스펜서 정보 조회 결과:', dispenserResponse);
+          logger.debug('디스펜서 정보 조회 결과', {
+            success: dispenserResponse.success,
+            hasData: !!dispenserResponse.data,
+            machinesCount: dispenserResponse.data?.machines?.length || 0
+          });
           
           if (dispenserResponse.success && dispenserResponse.data) {
             // 서버 응답: { machines: Machine[], group_id: string }
@@ -698,8 +697,7 @@ function MainHomeScreen() {
               const maxSlot = machines[0].max_slot || 3;
               const machine_id = machines[0].machine_id;
               
-              console.log('디스펜서 맥스 슬롯 설정:', maxSlot);
-              console.log('디스펜서 machine_id:', machine_id);
+              logger.debug('디스펜서 설정', { maxSlot, machine_id });
               setMaxSlot(maxSlot);
               
               // 🔥 AsyncStorage에 machine_id 저장 (핵심 수정!)
@@ -711,58 +709,62 @@ function MainHomeScreen() {
                   if (!currentUser.machine_id || currentUser.machine_id !== machine_id) {
                     currentUser.machine_id = machine_id;
                     await AsyncStorage.setItem(USER_KEY, JSON.stringify(currentUser));
-                    console.log('✅ AsyncStorage 업데이트 완료: machine_id =', machine_id);
+                    logger.log('AsyncStorage 업데이트 완료', { machine_id });
                   } else {
-                    console.log('✅ machine_id 이미 최신 상태:', machine_id);
+                    logger.debug('machine_id 이미 최신 상태', { machine_id });
                   }
                 }
               } catch (storageError) {
-                console.error('❌ AsyncStorage 업데이트 실패:', storageError);
+                logger.error('AsyncStorage 업데이트 실패', storageError);
               }
             } else {
-              console.log('등록된 기기가 없음, 기본값 3 사용');
+              logger.warn('등록된 기기가 없음, 기본값 3 사용');
               setMaxSlot(3);
             }
           } else {
-            console.log('디스펜서 정보 조회 실패, 기본값 3 사용');
+            logger.warn('디스펜서 정보 조회 실패, 기본값 3 사용');
             setMaxSlot(3);
           }
         } catch (error) {
-          console.error('디스펜서 정보 조회 중 에러 발생:', error);
+          logger.error('디스펜서 정보 조회 중 에러 발생', error);
           setMaxSlot(3); // 에러 시 기본값 3
         }
         
         // 약 목록 조회 추가
-        console.log('약 목록 조회 시작');
+        logger.log('약 목록 조회 시작');
         await loadMedicineList();
           
-        console.log('모든 데이터 로딩 완료');
+        logger.log('모든 데이터 로딩 완료');
           } else {
-        throw new Error('부모 계정에 그룹 정보가 없습니다.');
+        throw new Error('보호자 계정에 그룹 정보가 없습니다.');
           }
         } catch (error) {
-      console.error('부모 계정 정보 로딩 실패:', error);
-      setError(error instanceof Error ? error.message : '부모 계정 정보를 불러오는 중 오류가 발생했습니다.');
+      logger.error('보호자 계정 정보 로딩 실패', error);
+      setError(error instanceof Error ? error.message : '보호자 계정 정보를 불러오는 중 오류가 발생했습니다.');
     }
   };
 
   const loadFamilyMembers = useCallback(async () => {
     if (!parentConnect) {
-      console.log('parentConnect가 없습니다.');
-      setLoading(false);
+      logger.debug('parentConnect가 없습니다.');
+      setLoadingStates(prev => ({ ...prev, familyMembers: false }));
       return;
     }
 
     try {
-      setLoading(true);
+      setLoadingStates(prev => ({ ...prev, familyMembers: true }));
       setError(null);
       
-      console.log('가족 구성원 조회 시작:', parentConnect);
+      logger.log('가족 구성원 조회 시작', { parentConnect });
       const response = await getFamilyMembers();
-      console.log('가족 구성원 조회 결과:', response);
+      logger.debug('가족 구성원 조회 결과', {
+        success: response.success,
+        membersCount: response.data?.length || 0,
+        error: response.error?.message
+      });
       
       if (!response.success || !response.data) {
-        console.log('가족 구성원 조회 실패:', response.error?.message);
+        logger.warn('가족 구성원 조회 실패', { error: response.error?.message });
         setError(response.error?.message || '가족 구성원 조회 실패');
         setFamilyMembers([]);
         return;
@@ -771,22 +773,25 @@ function MainHomeScreen() {
       const members = response.data;
       setFamilyMembers(members);
       
-      const userJson = await AsyncStorage.getItem(USER_KEY);
-      if (!userJson) {
+      // 🔥 안전하게 사용자 정보 가져오기
+      const user = await getCurrentUser();
+      if (!user) {
         throw new Error('사용자 정보를 찾을 수 없습니다.');
       }
-      
-      const user = JSON.parse(userJson) as User;
-      console.log('현재 사용자:', user);
+      logger.debug('현재 사용자', { user_id: user.user_id, name: user.name, role: user.role });
       
       const savedId = await AsyncStorage.getItem(SELECTED_MEMBER_KEY);
       const savedMember = members.find(m => m.user_id === savedId);
       
       if (savedMember) {
-        if (user.role === 'child' && savedMember.role === 'parent') {
-          const childMember = members.find(m => m.role === 'child');
-          if (childMember) {
-            setSelectedMember(childMember);
+        if (user.role === 'child' && savedMember.user_id !== user.user_id) {
+          const currentUserMember = members.find(m => m.user_id === user.user_id);
+          if (currentUserMember) {
+            console.log('자녀 계정 - 저장된 멤버가 본인이 아니므로 본인 계정 선택:', currentUserMember);
+            setSelectedMember(currentUserMember);
+            await AsyncStorage.setItem(SELECTED_MEMBER_KEY, user.user_id);
+          } else {
+            console.log('본인 계정을 찾을 수 없음. user_id:', user.user_id);
           }
         } else {
           console.log('저장된 멤버로 설정:', savedMember);
@@ -795,20 +800,24 @@ function MainHomeScreen() {
       } else {
         console.log('저장된 멤버가 없음. 기본 선택 진행. user.role:', user.role);
         if (user.role === 'child') {
-          const childMember = members.find(m => m.role === 'child');
-          if (childMember) {
-            console.log('자식 계정 - 자식 멤버 선택:', childMember);
-            setSelectedMember(childMember);
+          // 🔥 자녀 계정일 때는 본인 계정을 찾아서 선택
+          const currentUserMember = members.find(m => m.user_id === user.user_id);
+          if (currentUserMember) {
+            console.log('자녀 계정 - 본인 계정 선택:', currentUserMember);
+            setSelectedMember(currentUserMember);
+            // 🔥 본인 계정으로 저장
+            await AsyncStorage.setItem(SELECTED_MEMBER_KEY, user.user_id);
           } else {
-            console.log('자식 멤버를 찾을 수 없음');
+            console.log('본인 계정을 찾을 수 없음. user_id:', user.user_id);
+            console.log('가족 구성원 목록:', members.map(m => ({ user_id: m.user_id, name: m.name, role: m.role })));
           }
         } else {
           const parent = members.find(member => member.role === 'parent');
           if (parent) {
-            console.log('부모 계정 - 부모 멤버 선택:', parent);
+            console.log('보호자 계정 - 보호자 멤버 선택:', parent);
             setSelectedMember(parent);
           } else {
-            console.log('부모 멤버를 찾을 수 없음');
+            console.log('보호자 멤버를 찾을 수 없음');
           }
         }
       }
@@ -817,6 +826,7 @@ function MainHomeScreen() {
       setError('가족 구성원 정보를 불러오는데 실패했습니다.');
     } finally {
       setLoading(false);
+      setLoadingStates(prev => ({ ...prev, familyMembers: false }));
     }
   }, [parentConnect]);
 
@@ -827,15 +837,28 @@ function MainHomeScreen() {
         return;
       }
 
-      console.log('🔥 사용자별 약물 목록 로딩 시작:', selectedMember.user_id);
+      console.log('사용자별 약물 목록 로딩 시작:', selectedMember.user_id);
       
-      // 🔍 토큰 상태 확인
       const { TokenDebugger } = await import('../utils/tokenDebugger');
       await TokenDebugger.monitorTokenRefresh();
       
-      setLoading(true);
+      // 🔥 캐시 확인 (점진적 로딩)
+      const { CacheManager, CACHE_KEYS, CACHE_DURATION } = await import('../utils/cache');
+      const cacheKey = CACHE_KEYS.MEDICINE_LIST(selectedMember.user_id);
+      const cachedMedicines = await CacheManager.get<Medicine[]>(cacheKey);
       
-      // 🔥 user_id 기반 약물 조회 (새로운 방식)
+      if (cachedMedicines && cachedMedicines.length > 0) {
+        // 캐시된 데이터로 즉시 표시
+        setMedicineList(cachedMedicines);
+        setLoadingStates(prev => ({ ...prev, medicines: false, supplements: false }));
+        setLoading(false);
+        if (__DEV__) {
+          console.log(`✅ [Cache] 약물 목록 캐시 히트: ${cachedMedicines.length}개`);
+        }
+      } else {
+        setLoading(true);
+      }
+      
       const response = await getMedicineList(selectedMember.user_id);
       
       if (response.success && response.data) {
@@ -856,11 +879,18 @@ function MainHomeScreen() {
         });
         
         setMedicineList(response.data);
+        setLoadingStates(prev => ({ ...prev, medicines: false }));
         
-        // 🔥 새로운 권한 시스템에 따른 약물 상호작용 검사 업데이트
+        // 🔥 캐시 저장
+        if (response.data && response.data.length > 0) {
+          await CacheManager.set(cacheKey, response.data, CACHE_DURATION.MEDIUM);
+          if (__DEV__) {
+            console.log(`✅ [Cache] 약물 목록 캐시 저장: ${response.data.length}개`);
+          }
+        }
+        
         console.log('🔍 [DrugInteraction] 현재 선택된 사용자:', selectedMember?.user_id);
         
-        // 🎯 권한 기반 필터링 (permission 필드 사용)
         const ownMedicines = response.data.filter((medicine: any) => {
           return (medicine as any).permission === 'own';
         });
@@ -902,17 +932,23 @@ function MainHomeScreen() {
       } else {
         console.error('사용자별 약물 목록 로딩 실패:', response.error);
         setMedicineList([]);
+        setLoadingStates(prev => ({ ...prev, medicines: false }));
       }
       
       // 🔥 영양제 목록은 기존 방식 유지 (권한 시스템 미적용)
       try {
         const parentMember = familyMembers.find(member => member.role === 'parent');
         if (parentMember) {
+          if (__DEV__) {
           console.log('영양제 목록 조회 시작');
+          }
           const supplementResponse = await getSupplementList(parentMember.user_id);
+          if (__DEV__) {
           console.log('영양제 목록 조회 결과:', supplementResponse);
+          }
           
           if (supplementResponse) {
+            if (__DEV__) {
             console.log('🔥 영양제 목록 분석:');
             supplementResponse.forEach((supplement, index) => {
               console.log(`영양제 ${index + 1}: ${supplement.name}`);
@@ -923,129 +959,189 @@ function MainHomeScreen() {
               console.log(`    - 숫자만: ${/^\d+$/.test(supplement.id || '')}`);
               console.log(`  슬롯: ${supplement.dispenserSlot}`);
             });
+            }
             setSupplementList(supplementResponse);
+            setLoadingStates(prev => ({ ...prev, supplements: false }));
           } else {
             setSupplementList([]);
+            setLoadingStates(prev => ({ ...prev, supplements: false }));
           }
         }
       } catch (error) {
         console.error('영양제 목록 조회 중 에러 발생:', error);
         setSupplementList([]);
+        setLoadingStates(prev => ({ ...prev, supplements: false }));
       }
     } catch (error) {
       console.error('약물 목록 로딩 중 오류:', error);
       setMedicineList([]);
     } finally {
       setLoading(false);
+      setLoadingStates(prev => ({ ...prev, medicines: false, supplements: false }));
     }
   }, [selectedMember?.user_id, familyMembers]);
 
   useEffect(() => {
-    console.log('loadParentConnectID 실행');
-    loadParentConnectID();
+    logger.debug('loadParentConnectID 실행');
+    // 🔥 에러 처리 추가
+    loadParentConnectID().catch((error) => {
+      logger.error('보호자 계정 정보 로드 실패', error);
+      setError(error instanceof Error ? error.message : '보호자 계정 정보를 불러오는 중 오류가 발생했습니다.');
+    });
   }, []);
 
   useEffect(() => {
     if (parentConnect) {
-      console.log('parentConnect 변경됨:', parentConnect);
-      loadFamilyMembers();
+      if (__DEV__) {
+        console.log('[MainHomeScreen] parentConnect 변경:', parentConnect);
+      }
+      // 🔥 에러 처리 추가
+      loadFamilyMembers().catch((error) => {
+        logger.error('가족 구성원 로드 실패', error);
+        setError(error instanceof Error ? error.message : '가족 구성원을 불러오는 중 오류가 발생했습니다.');
+      });
     }
-  }, [parentConnect]);
+  }, [parentConnect, loadFamilyMembers]); // 🔥 loadFamilyMembers 의존성 추가
 
   // 🔥 가족 구성원이 로드된 후 가족 전체 약물 상호작용 검사 실행
   useEffect(() => {
     if (familyMembers.length > 0) {
-      console.log('🔍 [FamilyDrugInteraction] 가족 구성원 로드 완료, 가족 전체 약물 상호작용 검사 시작');
-      // 약간의 지연을 두고 실행하여 개별 약물 로딩이 완료된 후 실행
-      setTimeout(() => {
-        checkFamilyDrugInteractions();
-      }, 1000);
+      if (__DEV__) {
+        console.log('[FamilyDrugInteraction] 가족 구성원 로드 완료, 상호작용 검사 시작');
+      }
+      // 약물 목록 로딩 완료 후 즉시 검사 (지연 제거)
+      const timer = setTimeout(async () => {
+        try {
+          await checkFamilyDrugInteractions(true); // 강제 새로고침으로 즉시 검사
+        } catch (error) {
+          logger.error('가족 약물 상호작용 검사 실패', error);
+        }
+      }, 300); // 지연 시간 단축 (300ms)
+      
+      return () => clearTimeout(timer); // 🔥 cleanup 추가
     }
-  }, [familyMembers]);
+  }, [familyMembers, checkFamilyDrugInteractions]);
 
   useFocusEffect(
     useCallback(() => {
       if (selectedMember?.user_id) {
-        console.log('화면 포커스 - 약 목록 새로고침:', selectedMember.user_id);
-        loadMedicineList();
+        if (__DEV__) {
+          console.log('[MainHomeScreen] 화면 포커스 - 약 목록 새로고침:', selectedMember.user_id);
+        }
+        // 🔥 에러 처리 추가
+        loadMedicineList().catch((error) => {
+          logger.error('약 목록 로드 실패', error);
+        });
       }
     }, [selectedMember?.user_id, loadMedicineList])
   );
 
   // navigation params를 통한 새로고침 처리
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    
     const unsubscribe = navigation.addListener('focus', () => {
       const state = navigation.getState();
       const route = state.routes[state.index];
-      const params = route.params as any;
+      
+      // 🔥 타입 안전성 개선: 타입 가드 함수 사용
+      const getParams = (): { refresh?: boolean; refreshSchedule?: boolean; medicineId?: string } | undefined => {
+        if (!route.params) return undefined;
+        const params = route.params as any;
+        return {
+          refresh: typeof params.refresh === 'boolean' ? params.refresh : undefined,
+          refreshSchedule: typeof params.refreshSchedule === 'boolean' ? params.refreshSchedule : undefined,
+          medicineId: typeof params.medicineId === 'string' ? params.medicineId : undefined,
+        };
+      };
+      
+      const params = getParams();
       
       if (params?.refresh && selectedMember?.user_id) {
-        console.log('새로고침 플래그 감지 - 약 목록 새로고침');
-        loadMedicineList();
+        if (__DEV__) {
+          console.log('[MainHomeScreen] 새로고침 플래그 감지');
+        }
+        // 🔥 약물 목록 변경 시 캐시 무효화
+        invalidateInteractionCaches();
+        // 🔥 에러 처리 추가
+        loadMedicineList().catch((error) => {
+          logger.error('약 목록 로드 실패', error);
+        });
+        // 상호작용 검사 재실행 (강제 새로고침)
+        // 🔥 cleanup을 위해 timeoutId 저장
+        timeoutId = setTimeout(async () => {
+          try {
+            await checkFamilyDrugInteractions(true);
+          } catch (error) {
+            logger.error('가족 약물 상호작용 검사 실패', error);
+          } finally {
+            timeoutId = null;
+          }
+        }, 500);
         // 새로고침 후 플래그 제거
-        navigation.setParams({ refresh: undefined } as any);
+        navigation.setParams({ refresh: false } as any);
       }
       
       // 🔥 스케줄 수정 후 돌아온 경우 해당 약물의 시간대별 복용량만 새로고침
+      // 스케줄 변경은 약물 목록에 영향을 주지 않으므로 상호작용 검사 재실행 불필요
       if (params?.refreshSchedule && params?.medicineId && selectedMember?.user_id) {
-        console.log('🔍 스케줄 새로고침 플래그 감지:', params.medicineId);
+        if (__DEV__) {
+          console.log('[MainHomeScreen] 스케줄 새로고침 플래그 감지:', params.medicineId);
+        }
         loadDailySchedule(params.medicineId, selectedMember.user_id);
         // 플래그 제거
-        navigation.setParams({ refreshSchedule: undefined, medicineId: undefined } as any);
+        navigation.setParams({ refreshSchedule: false, medicineId: '' } as any);
       }
     });
 
-    return unsubscribe;
-  }, [navigation, selectedMember?.user_id, loadMedicineList]);
+    return () => {
+      unsubscribe();
+      // 🔥 cleanup: 컴포넌트 언마운트 시 timeout 정리
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [navigation, selectedMember?.user_id, loadMedicineList, invalidateInteractionCaches, checkFamilyDrugInteractions]);
 
   useEffect(() => {
-    AsyncStorage.getItem('@user').then(userJson => {
-      if (userJson) {
-        const user = JSON.parse(userJson);
-        setUserType(user.role);
+    let isMounted = true;
+    
+    const loadUserType = async () => {
+      try {
+        const userJson = await AsyncStorage.getItem('@user');
+        if (userJson && isMounted) {
+          const user = JSON.parse(userJson);
+          setUserType(user.role);
+        }
+      } catch (error) {
+        if (__DEV__) {
+          console.error('[MainHomeScreen] 사용자 타입 로드 실패:', error);
+        }
       }
-    });
+    };
+    
+    loadUserType();
+    
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
-    console.log('👤 selectedMember 변경됨:', selectedMember);
+    if (__DEV__) {
+      console.log('[MainHomeScreen] selectedMember 변경:', selectedMember?.name);
+    }
   }, [selectedMember]);
 
-  const handleSelectMember = async (member: FamilyMember) => {
-    try {
-      console.log('멤버 선택 시도:', member);
-      const userJson = await AsyncStorage.getItem(USER_KEY);
-      if (!userJson) {
-        throw new Error('사용자 정보를 찾을 수 없습니다.');
-      }
-      
-      const user = JSON.parse(userJson) as User;
-      if (user.role === 'child' && member.role === 'parent') {
-        Toast.show({
-          type: 'error',
-          text1: '서브 계정으로는 메인 계정을 선택할 수 없습니다.',
-          position: 'bottom',
-        });
-        return;
-      }
-      
-      setSelectedMember(member);
-      setIsExpanded(false);
-      await AsyncStorage.setItem(SELECTED_MEMBER_KEY, member.user_id);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '멤버 선택 실패';
-      Toast.show({
-        type: 'error',
-        text1: errorMessage,
-      });
-    }
-  };
+  // 🔥 handleSelectMember는 위에서 useCallback으로 정의됨 (중복 제거 완료)
 
   const handlePress = useCallback(() => {
     setIsExpanded(prev => !prev);
   }, []);
 
   const handleRefresh = useCallback(async () => {
+    // 🔥 새로고침 시 캐시 무효화
+    invalidateInteractionCaches();
     setRefreshing(true);
     try {
       await loadFamilyMembers();
@@ -1067,36 +1163,7 @@ function MainHomeScreen() {
     });
   }, [medicineList]);
 
-  // 약 리스트 그룹화
-  const groupedMedicines = useMemo(() => {
-    const slotMap: Record<number, Medicine[]> = {};
-    for (let i = 1; i <= 6; i++) {
-      slotMap[i] = [];
-    }
-    
-    console.log('=== groupedMedicines 처리 시작 ===');
-    console.log('medicineList:', medicineList);
-    
-    medicineList.forEach((med) => {
-      // 🔥 새로운 API에서 슬롯 정보 직접 사용
-      const slot = med.slot || 1;
-      
-      console.log(`=== ${med.name} 그룹화 처리 ===`);
-      console.log('med.slot:', med.slot, typeof med.slot);
-      console.log('🎯 최종 결정된 slot:', slot);
-      
-      slotMap[slot].push(med);
-    });
-    
-    console.log('=== 최종 slotMap ===');
-    Object.keys(slotMap).forEach(slotNum => {
-      if (slotMap[parseInt(slotNum)].length > 0) {
-        console.log(`슬롯 ${slotNum}:`, slotMap[parseInt(slotNum)].map(m => m.name));
-      }
-    });
-    
-    return slotMap;
-  }, [medicineList]);
+  // groupedMedicines와 slotKeys는 MedicineList 컴포넌트로 이동됨
 
   // AnimatedMedicineCard 컴포넌트 추가
   const AnimatedMedicineCard: React.FC<{ children: React.ReactNode; index: number; onPress: () => void }> = React.memo(({ children, index, onPress }) => {
@@ -1146,8 +1213,8 @@ function MainHomeScreen() {
         
         const scheduleKey = `${medicine.medi_id}_${actualTargetUserId}`;
         
-        // 이미 로드된 스케줄이 없고, 로딩 중이 아닌 경우에만 로드
-        if (!dailySchedules[scheduleKey] && !loadingSchedules.current.has(scheduleKey)) {
+        // 이미 로드된 스케줄이 없는 경우에만 로드
+        if (!dailySchedules[scheduleKey]) {
           console.log(`🔍 [자동 스케줄 로드] ${medicine.name} 스케줄 로딩 시작 (대상: ${actualTargetUserId})`);
           loadDailySchedule(medicine.medi_id, actualTargetUserId);
         }
@@ -1155,8 +1222,64 @@ function MainHomeScreen() {
     }
   }, [medicineList, selectedMember?.user_id, dailySchedules]);
 
+  // 🔥 영양제 리스트가 로드되면 자동으로 스케줄과 복용 상태도 로드
+  useEffect(() => {
+    if (supplementList.length > 0 && selectedMember?.user_id) {
+      console.log('🔍 [자동 스케줄 로드] 영양제 리스트 변경 감지, 스케줄 로딩 시작');
+      
+      supplementList.forEach((supplement) => {
+        // target_users 기반으로 실제 스케줄이 저장된 사용자 결정
+        let actualTargetUserId = selectedMember.user_id;
+        
+        // target_users가 있으면 할당된 사용자의 스케줄 조회
+        if (supplement.target_users && supplement.target_users.length > 0) {
+          actualTargetUserId = supplement.target_users[0];
+          console.log(`🎯 [영양제 ${supplement.name}] 타인 영양제 감지 - 실제 스케줄 대상: ${actualTargetUserId}`);
+        }
+        
+        const scheduleKey = `${supplement.id}_${actualTargetUserId}`;
+        const statusKey = `${supplement.id}_${actualTargetUserId}`;
+        
+        // 이미 로드된 스케줄이 없는 경우에만 로드
+        if (!supplementSchedules[scheduleKey]) {
+          console.log(`🔍 [자동 스케줄 로드] ${supplement.name} 스케줄 로딩 시작 (대상: ${actualTargetUserId})`);
+          loadSupplementSchedule(supplement.id || '', actualTargetUserId);
+        }
+        
+        // 🔥 복용 완료 상태 조회 (약물과 동일한 방식)
+        if (!doseCompletionStatus[statusKey]) {
+          setLoadingDoseStatus(prev => new Set(prev).add(statusKey)); // 🔥 로딩 시작
+          loadDoseCompletionStatus(supplement.id || '', actualTargetUserId).then(status => {
+            setDoseCompletionStatus(prev => {
+              const prevStatus = prev[statusKey];
+              if (prevStatus && 
+                  prevStatus.morning === status.morning &&
+                  prevStatus.afternoon === status.afternoon &&
+                  prevStatus.evening === status.evening) {
+                return prev; // 변경사항 없으면 이전 상태 반환
+              }
+              return {
+                ...prev,
+                [statusKey]: status
+              };
+            });
+          }).catch(error => {
+            logger.warn('영양제 복용 완료 상태 조회 실패', error);
+          }).finally(() => {
+            // 🔥 로딩 완료
+            setLoadingDoseStatus(prev => {
+              const next = new Set(prev);
+              next.delete(statusKey);
+              return next;
+            });
+          });
+        }
+      });
+    }
+  }, [supplementList, selectedMember?.user_id, supplementSchedules, doseCompletionStatus, loadDoseCompletionStatus]);
+
   // 통합된 상세정보 함수
-  const handleViewItemDetail = (type: 'medicine' | 'supplement', item: any) => {
+  const handleViewItemDetail = async (type: 'medicine' | 'supplement', item: any) => {
     console.log('🔥 handleViewItemDetail 호출됨');
     console.log('🔥 type:', type);
     console.log('🔥 item:', item);
@@ -1172,6 +1295,7 @@ function MainHomeScreen() {
     const isSupplementByMediId = item.medi_id && item.medi_id.startsWith('supplement_');
     const isMedicineByMediId = item.medi_id && (item.medi_id.startsWith('medicine_') || /^\d+$/.test(item.medi_id));
     
+    if (__DEV__) {
     console.log('🔍 medi_id 패턴 기반 구분 판단:', {
       medi_id: item.medi_id,
       isSupplementByMediId,
@@ -1180,10 +1304,12 @@ function MainHomeScreen() {
       itemName: item.name,
       finalDecision: type === 'medicine' && !isSupplementByMediId ? 'medicine' : 'supplement'
     });
+    }
     
     if (type === 'medicine' && !isSupplementByMediId) {
       const memberIdToUse = selectedMember?.user_id || (familyMembers.length > 0 ? familyMembers[0].user_id : '');
       
+      if (__DEV__) {
       console.log('🔥 약 상세정보로 이동 - MedicineDetailScreen');
       console.log('🔥 전달할 파라미터:', {
         medicineId: item.medi_id,
@@ -1192,6 +1318,7 @@ function MainHomeScreen() {
         isParent: userType === 'parent',
         detail: null
       });
+      }
       
       (navigation as any).navigate('MedicineDetail', {
         medicineId: item.medi_id,
@@ -1201,35 +1328,29 @@ function MainHomeScreen() {
         detail: null // 저장된 약이므로 detail은 null
       });
     } else {
+      if (__DEV__) {
       console.log('영양제 상세정보로 이동 - SupplementDetailScreen');
+      }
       
-      // tablet.json에서 저장된 영양제 이름과 매칭되는 제품 찾기
+      // 서버 API에서 저장된 영양제 이름과 매칭되는 제품 찾기
       let matchedSupplement = null;
       try {
-        const supplementData = require('../assets/tablet.json');
-        // 정확히 일치하는 제품명 찾기
-        matchedSupplement = supplementData.find((sup: any) => 
-          sup.PRDLST_NM === item.name
-        );
-        
-        // 정확히 일치하지 않으면 부분 일치로 찾기
-        if (!matchedSupplement) {
-          matchedSupplement = supplementData.find((sup: any) => 
-            sup.PRDLST_NM.includes(item.name) || item.name.includes(sup.PRDLST_NM)
-          );
-        }
+        const { findTabletMasterByName } = await import('../api/medicineMaster');
+        matchedSupplement = await findTabletMasterByName(item.name);
       } catch (error) {
+        if (__DEV__) {
         console.error('영양제 데이터 로드 실패:', error);
+        }
       }
       
       // 매칭된 제품 정보가 있으면 실제 정보 사용, 없으면 기본값 사용
       const supplementForDetail = matchedSupplement ? {
-        PRDLST_NM: matchedSupplement.PRDLST_NM,
-        BSSH_NM: matchedSupplement.BSSH_NM,
-        RAWMTRL_NM: matchedSupplement.RAWMTRL_NM,
-        PRIMARY_FNCLTY: matchedSupplement.PRIMARY_FNCLTY,
-        NTK_MTHD: matchedSupplement.NTK_MTHD,
-        IFTKN_ATNT_MATR_CN: matchedSupplement.IFTKN_ATNT_MATR_CN,
+        PRDLST_NM: matchedSupplement.name,
+        BSSH_NM: matchedSupplement.company_name,
+        RAWMTRL_NM: matchedSupplement.raw_materials,
+        PRIMARY_FNCLTY: matchedSupplement.primary_function,
+        NTK_MTHD: matchedSupplement.intake_method,
+        IFTKN_ATNT_MATR_CN: matchedSupplement.precautions,
       } : {
         PRDLST_NM: item.name || '정보 없음',
         BSSH_NM: '제조사 정보 없음',
@@ -1239,7 +1360,9 @@ function MainHomeScreen() {
         IFTKN_ATNT_MATR_CN: '복용 전 전문가와 상담하세요.',
       };
       
+      if (__DEV__) {
       console.log('매칭된 영양제 정보:', matchedSupplement ? '찾음' : '못찾음');
+      }
       
       (navigation as any).navigate('SupplementDetail', {
         supplement: supplementForDetail,
@@ -1251,80 +1374,10 @@ function MainHomeScreen() {
     }
   };
 
-  const handleDeleteMedicine = async (medicine: Medicine) => {
-    try {
-      const userJson = await AsyncStorage.getItem('@user');
-      if (!userJson) return;
-      
-      const user = JSON.parse(userJson);
-      console.log('약 삭제 시작:', medicine.name);
-      
-      // 기존 deleteMedicine 대신 family.ts의 deleteMedicine 사용
-      const success = await deleteMedicine(user.user_id, medicine.medi_id);
-      
-      if (success) {
-        // 로컬 상태에서 해당 약 제거
-        setMedicineList(prev => prev.filter(m => m.medi_id !== medicine.medi_id));
-        
-        Toast.show({
-          type: 'success',
-          text1: '약이 삭제되었습니다',
-          text2: `${medicine.name}이(가) 목록에서 제거되었습니다.`,
-        });
-      } else {
-        Toast.show({
-          type: 'error',
-          text1: '삭제 실패',
-          text2: '약 삭제 중 오류가 발생했습니다.',
-        });
-      }
-    } catch (error) {
-      console.error('약 삭제 실패:', error);
-      Toast.show({
-        type: 'error',
-        text1: '삭제 실패',
-        text2: '약 삭제 중 오류가 발생했습니다.',
-      });
-    }
-  };
+  // 🔥 handleDeleteMedicine과 handleDeleteSupplement는 useMedicineActions 훅에서 제공됨 (중복 제거 완료)
 
-  const handleDeleteSupplement = async (supplement: NutritionalSupplement) => {
-    try {
-      const userJson = await AsyncStorage.getItem('@user');
-      if (!userJson) return;
-      
-      const user = JSON.parse(userJson);
-      console.log('영양제 삭제 시작:', supplement.name);
-      
-      const result = await deleteSupplementAPI(user.user_id, supplement.id || '');
-      
-      if (result) {
-        // 로컬 상태에서 해당 영양제 제거
-        setSupplementList(prev => prev.filter(s => s.id !== supplement.id));
-        
-        Toast.show({
-          type: 'success',
-          text1: '영양제가 삭제되었습니다',
-          text2: `${supplement.name}이(가) 목록에서 제거되었습니다.`,
-        });
-      } else {
-        Toast.show({
-          type: 'error',
-          text1: '삭제 실패',
-          text2: '영양제 삭제 중 오류가 발생했습니다.',
-        });
-      }
-    } catch (error) {
-      console.error('영양제 삭제 실패:', error);
-      Toast.show({
-        type: 'error',
-        text1: '삭제 실패',
-        text2: '영양제 삭제 중 오류가 발생했습니다.',
-      });
-    }
-  };
-
-  const renderRightActions = (
+  // 🔥 renderRightActions를 useCallback으로 메모이제이션
+  const renderRightActions = useCallback((
     progress: any,
     dragX: any,
     onDelete: () => void
@@ -1359,156 +1412,11 @@ function MainHomeScreen() {
         </TouchableOpacity>
       </Animated.View>
     );
-  };
+  }, []);
 
-  // 🔥 요일별 스케줄 확인 함수 추가 - 약물 상태 검증 포함
-  const getTodayScheduleForMedicine = (medicine: Medicine, dailySchedule: any) => {
-    const today = new Date();
-    const dayOfWeek = today.getDay(); // 0=일요일, 1=월요일, ..., 6=토요일
-    
-    // 🔥 스케줄 저장 시 사용하는 요일 형식과 일치시키기
-    const shortDayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']; // 0=일요일부터 시작
-    const todayShortName = shortDayNames[dayOfWeek];
-    
-    // 전체 요일명도 함께 계산 (서버에서 다른 형식으로 올 수 있음)
-    const fullDayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const todayFullName = fullDayNames[dayOfWeek];
-    
-    console.log(`🗓️ [${medicine.name}] 오늘 요일 체크: ${todayShortName} (${dayOfWeek}) / 전체명: ${todayFullName}`);
-    console.log(`🗓️ [${medicine.name}] 전체 dailySchedule 데이터:`, dailySchedule);
-    
-    // 🔥 약물 상태 검증 - 재고와 복용 기간 확인
-    const totalQuantity = parseInt(medicine.totalQuantity || '0');
-    const endDate = medicine.end_date ? new Date(medicine.end_date) : null;
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0); // 시간을 00:00:00으로 설정
-    
-    // 재고가 0이거나 복용 기간이 끝난 경우 스케줄 표시 안함
-    if (totalQuantity <= 0) {
-      console.log(`❌ [${medicine.name}] 재고 부족으로 스케줄 표시 안함: ${totalQuantity}정`);
-      return {
-        morning: 0,
-        afternoon: 0,
-        evening: 0,
-        total: 0,
-        dayOfWeek: todayShortName,
-        isScheduledDay: false,
-        reason: 'no_stock'
-      };
-    }
-    
-    if (endDate && endDate < todayDate) {
-      console.log(`❌ [${medicine.name}] 복용 기간 만료로 스케줄 표시 안함: ${medicine.end_date}`);
-      return {
-        morning: 0,
-        afternoon: 0,
-        evening: 0,
-        total: 0,
-        dayOfWeek: todayShortName,
-        isScheduledDay: false,
-        reason: 'expired'
-      };
-    }
-    
-    console.log(`✅ [${medicine.name}] 약물 상태 정상 - 재고: ${totalQuantity}정, 종료일: ${medicine.end_date}`);
-    
-    
-    // 🔥 우선 기본 복용량부터 확인 (매일 복용하는 경우)
-    const morningDose = dailySchedule?.morning || 0;
-    const afternoonDose = dailySchedule?.afternoon || 0;
-    const eveningDose = dailySchedule?.evening || 0;
-    
-    console.log(`📋 [${medicine.name}] 기본 복용량:`, { morningDose, afternoonDose, eveningDose });
-    
-    // 🔥 기본 복용량이 있으면 우선 사용 (매일 복용)
-    if (morningDose > 0 || afternoonDose > 0 || eveningDose > 0) {
-      const result = {
-        morning: morningDose,
-        afternoon: afternoonDose,
-        evening: eveningDose,
-        total: morningDose + afternoonDose + eveningDose,
-        dayOfWeek: todayShortName,
-        isScheduledDay: true,
-        reason: 'daily_schedule'
-      };
-      
-      console.log(`✅ [${medicine.name}] 매일 복용 스케줄 적용:`, result);
-      return result;
-    }
-    
-    // 🔥 요일별 스케줄이 있는 경우에만 처리
-    if (dailySchedule?.weeklySchedule) {
-      console.log(`📋 [${medicine.name}] 요일별 스케줄 존재:`, dailySchedule.weeklySchedule);
-      
-      // 🔥 짧은 형식(mon, tue)과 전체 형식(monday, tuesday) 모두 시도
-      let todaySchedule = dailySchedule.weeklySchedule[todayShortName]; // 먼저 짧은 형식으로 시도
-      
-      // 짧은 형식이 없으면 전체 형식으로 시도
-      if (!todaySchedule) {
-        todaySchedule = dailySchedule.weeklySchedule[todayFullName];
-        console.log(`📋 [${medicine.name}] 전체 요일명으로 재시도: ${todayFullName}`, todaySchedule);
-      } else {
-        console.log(`📋 [${medicine.name}] 짧은 요일명으로 발견: ${todayShortName}`, todaySchedule);
-      }
-      
-      if (todaySchedule) {
-        console.log(`📋 [${medicine.name}] 오늘 스케줄 (요일별):`, todaySchedule);
-        
-        // 요일별 스케줄에서 직접 복용량 가져오기
-        const weeklyMorningDose = todaySchedule.morning ? (parseInt(todaySchedule.morningDose?.toString()) || 1) : 0;
-        const weeklyAfternoonDose = todaySchedule.afternoon ? (parseInt(todaySchedule.afternoonDose?.toString()) || 1) : 0;
-        const weeklyEveningDose = todaySchedule.evening ? (parseInt(todaySchedule.eveningDose?.toString()) || 1) : 0;
-        
-        const result = {
-          morning: weeklyMorningDose,
-          afternoon: weeklyAfternoonDose,
-          evening: weeklyEveningDose,
-          total: weeklyMorningDose + weeklyAfternoonDose + weeklyEveningDose,
-          dayOfWeek: todayShortName,
-          isScheduledDay: weeklyMorningDose > 0 || weeklyAfternoonDose > 0 || weeklyEveningDose > 0,
-          reason: 'weekly_schedule'
-        };
-        
-        console.log(`✅ [${medicine.name}] 오늘의 복용 스케줄 (요일별):`, result);
-        return result;
-      } else {
-        // 오늘 요일에 스케줄이 없는 경우 - 복용하지 않는 날
-        console.log(`❌ [${medicine.name}] 요일별 스케줄에서 오늘은 복용하지 않는 날: ${todayShortName} / ${todayFullName}`);
-        
-        const result = {
-          morning: 0,
-          afternoon: 0,
-          evening: 0,
-          total: 0,
-          dayOfWeek: todayShortName,
-          isScheduledDay: false,
-          reason: 'no_schedule_today'
-        };
-        
-        console.log(`✅ [${medicine.name}] 오늘의 복용 스케줄 (스케줄 없음):`, result);
-        return result;
-      }
-    }
-    
-    // 🔥 어떤 스케줄도 없는 경우 - 기본 스케줄 적용 (매일 아침 1정)
-    console.log(`❌ [${medicine.name}] 스케줄 정보가 전혀 없음 - 기본 스케줄 적용`);
-    
-    const result = {
-      morning: 1, // 🔥 기본값: 매일 아침 1정
-      afternoon: 0,
-      evening: 0,
-      total: 1,
-      dayOfWeek: todayShortName,
-      isScheduledDay: true, // 🔥 기본적으로 복용 가능하도록 변경
-      reason: 'default_schedule'
-    };
-    
-    console.log(`✅ [${medicine.name}] 오늘의 복용 스케줄 (기본 매일 아침 1정):`, result);
-    return result;
-  };
 
-  // 🔥 약물명 표시 개선 함수
-  const getMedicineDisplayInfo = (medicine: Medicine, todaySchedule: any) => {
+  // 🔥 약물명 표시 개선 함수 (useCallback으로 메모이제이션)
+  const getMedicineDisplayInfo = useCallback((medicine: Medicine, todaySchedule: any) => {
     const { morning, afternoon, evening, isScheduledDay } = todaySchedule;
     
     let scheduleText = '';
@@ -1530,404 +1438,12 @@ function MainHomeScreen() {
       isScheduledDay,
       todayTotal: morning + afternoon + evening
     };
-  };
+  }, []);
 
-  // 기존 renderMedicineItem 함수에서 복용 완료 버튼 부분 수정
-  const renderMedicineItem = (medicine: Medicine, index: number) => {
-    const handleViewMedicineDetail = () => {
-      console.log('🔥 [renderMedicineItem] 의약품 상세보기:', medicine.name, medicine.medi_id);
-      handleViewItemDetail('medicine', medicine);
-    };
+  // renderMedicineItem 함수는 MedicineItem 컴포넌트로 분리됨
 
-    const handleSchedulePress = () => {
-      handleNavigateToSchedule(medicine);
-    };
-
-    const formatDate = (dateStr: string | undefined) => {
-      if (!dateStr) return '없음';
-      try {
-        const date = new Date(dateStr);
-        return date.toLocaleDateString('ko-KR', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-      } catch {
-        return dateStr;
-      }
-    };
-
-    const checkIsTargetUser = () => {
-      if (!selectedMember) return false;
-      
-      // 🔥 자식 계정의 경우 항상 본인이 대상인지만 확인
-      if (userType === 'child') {
-        if (!medicine.target_users || medicine.target_users.length === 0) {
-          return true; // 가족 공통 약물
-        }
-        return medicine.target_users.includes(selectedMember.user_id);
-      }
-      
-      // 🔥 부모 계정의 경우 기존 로직 유지
-      if (!medicine.target_users || medicine.target_users.length === 0) {
-        return true;
-      }
-      
-      return medicine.target_users.includes(selectedMember.user_id);
-    };
-
-    const isTargetUser = checkIsTargetUser();
-    const ownerInfo = getOwnerInfo(medicine);
-
-    const analyzeMedicineType = (): 'family_common' | 'personal_only' | 'partial_common' | 'others_only' => {
-      if (!medicine.target_users || medicine.target_users.length === 0) {
-        return 'family_common';
-      }
-      
-      const targetCount = medicine.target_users.length;
-      const totalMembers = familyMembers.length;
-      
-      if (targetCount === totalMembers) {
-        return 'family_common';
-      } else if (targetCount === 1) {
-        if (medicine.target_users.includes(selectedMember?.user_id || '')) {
-          return 'personal_only';
-      } else {
-          return 'others_only';
-      }
-    } else {
-        return 'partial_common';
-      }
-    };
-
-    const medicineType = analyzeMedicineType();
-
-    const getCardStyle = () => {
-      const baseStyle = {
-        ...styles.medicineCard,
-        backgroundColor: isDark ? themeColors.card : 'white',
-      };
-
-      // 🔥 자식 계정의 경우 색깔 표시 로직 개선
-      if (userType === 'child') {
-        if (medicineType === 'family_common') {
-          return {
-            ...baseStyle,
-            borderWidth: 2,
-            borderColor: colors.PRIMARY.DEFAULT,
-            backgroundColor: isDark ? themeColors.card : '#F0F8FF',
-          };
-        } else if (isTargetUser) {
-          return {
-            ...baseStyle,
-            borderWidth: 2,
-            borderColor: colors.SUCCESS.DEFAULT,
-            backgroundColor: isDark ? themeColors.card : '#F0FFF0',
-          };
-        } else {
-          return {
-            ...baseStyle,
-            borderWidth: 2,
-            borderColor: '#FF6B6B',
-            backgroundColor: isDark ? themeColors.card : '#FFE5E5',
-          };
-        }
-      }
-
-      switch (medicineType) {
-        case 'family_common':
-          return {
-            ...baseStyle,
-            borderWidth: 1,
-            borderColor: colors.PRIMARY.DEFAULT,
-            backgroundColor: isDark ? themeColors.card : '#F0F8FF',
-          };
-        case 'personal_only':
-          return {
-            ...baseStyle,
-            borderWidth: 2,
-            borderColor: colors.SUCCESS.DEFAULT,
-            backgroundColor: isDark ? themeColors.card : '#F0FFF0',
-          };
-        case 'partial_common':
-          return {
-            ...baseStyle,
-            borderWidth: 1,
-            borderColor: '#FFA500',
-            backgroundColor: isDark ? themeColors.card : '#FFF8DC',
-          };
-        case 'others_only':
-          return {
-            ...baseStyle,
-            borderWidth: 1,
-            borderColor: '#FF6B6B',
-            backgroundColor: isDark ? themeColors.card : '#FFE5E5',
-          };
-        default:
-          return baseStyle;
-      }
-    };
-
-    // 🔥 target_users 기반으로 올바른 스케줄 키 생성
-    let actualTargetUserId = selectedMember?.user_id || '';
-    if (medicine.target_users && medicine.target_users.length > 0) {
-      actualTargetUserId = medicine.target_users[0];
-    }
-    
-    const scheduleKey = `${medicine.medi_id}_${actualTargetUserId}`;
-    const dailySchedule = dailySchedules[scheduleKey];
-
-    // 🔥 오늘의 스케줄 계산
-    const todaySchedule = getTodayScheduleForMedicine(medicine, dailySchedule);
-    const displayInfo = getMedicineDisplayInfo(medicine, todaySchedule);
-
-    return (
-      <Swipeable
-        renderRightActions={(progress, dragX) =>
-          renderRightActions(progress, dragX, () => handleDeleteMedicine(medicine))
-        }
-        enabled={userType === 'parent'}
-      >
-        <View style={[
-          styles.simpleMedicineCard,
-          getCardStyle(),
-          {
-            backgroundColor: isDark ? themeColors.card : 'white',
-          }
-        ]}>
-          <View style={styles.medicineInfo}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <Text style={[styles.medicineName, { color: themeColors.text, flex: 1 }]}>{medicine.name}</Text>
-              <View style={{ alignItems: 'flex-end' }}>
-                {/* 약물 성격에 따른 상태 표시 */}
-                {medicineType === 'family_common' ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Feather name="users" size={16} color="#007AFF" />
-                    <Text style={{ color: '#007AFF', fontSize: 12, marginLeft: 4 }}>
-                      가족 공통
-                    </Text>
-                  </View>
-                ) : ownerInfo.isOwn ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Feather name="check-circle" size={16} color="#28A745" />
-                    <Text style={{ color: '#28A745', fontSize: 12, marginLeft: 4 }}>내 약물</Text>
-                  </View>
-                ) : ownerInfo.isManaged ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Feather name="shield" size={16} color="#FFA500" />
-                    <Text style={{ color: '#FFA500', fontSize: 12, marginLeft: 4 }}>관리 약물</Text>
-                  </View>
-                ) : (
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <Feather name="lock" size={16} color="#FF6B6B" />
-                    <Text style={{ color: '#FF6B6B', fontSize: 12, marginLeft: 4 }}>타인 약물</Text>
-                  </View>
-                )}
-              </View>
-            </View>
-            
-            <View style={styles.medicineDetails}>
-              <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                총량: {medicine.totalQuantity || '-'}정 | 남은 개수: {medicine.remain || '-'}정
-              </Text>
-              <Text style={[styles.medicineDetail, { color: colors.PRIMARY.DEFAULT, fontWeight: 'bold' }]}>
-                슬롯: {medicine.slot || '-'}번
-              </Text>
-            </View>
-
-            {/* 🔥 시간대별 복용량 표시 - Hook 제거하고 단순 조회 */}
-              <View style={styles.medicineDetails}>
-                <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                시작일: {formatDateForDisplay(medicine.start_date)}
-                </Text>
-                <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                종료일: {formatDateForDisplay(medicine.end_date)}
-                </Text>
-            </View>
-            
-                        {/* 🔥 복용 완료 상태 확인 및 조건부 렌더링 */}
-            {(ownerInfo.isOwn || ownerInfo.isManaged) && todaySchedule.isScheduledDay && (() => {
-              // 🔥 재고 부족이나 기간 만료인 경우 스케줄 표시 안함
-              if (todaySchedule.reason === 'no_stock') {
-                return (
-                  <View style={[
-                    styles.doseCompletionSection,
-                    { backgroundColor: isDark ? '#2a1a1a' : '#FFE5E5' }
-                  ]}>
-                    <Text style={[styles.sectionTitle, { color: colors.DANGER.DEFAULT, marginBottom: 8, textAlign: 'center' }]}>
-                      ⚠️ 재고 부족
-                    </Text>
-                    <Text style={[styles.medicineDetail, { color: isDark ? '#888' : '#666', textAlign: 'center', fontSize: 12 }]}>
-                      약물 재고가 부족합니다. 새로운 약을 추가해주세요.
-                    </Text>
-                  </View>
-                );
-              }
-              
-              if (todaySchedule.reason === 'expired') {
-                return (
-                  <View style={[
-                    styles.doseCompletionSection,
-                    { backgroundColor: isDark ? '#2a1a1a' : '#FFE5E5' }
-                  ]}>
-                    <Text style={[styles.sectionTitle, { color: colors.DANGER.DEFAULT, marginBottom: 8, textAlign: 'center' }]}>
-                      ⚠️ 복용 기간 만료
-                    </Text>
-                    <Text style={[styles.medicineDetail, { color: isDark ? '#888' : '#666', textAlign: 'center', fontSize: 12 }]}>
-                      복용 기간이 만료되었습니다. 의사와 상담 후 연장하세요.
-                    </Text>
-                  </View>
-                );
-              }
-              
-              // 🔥 실제 복용 완료 상태를 API에서 조회 (target_users 기반)
-              const statusKey = `${medicine.medi_id}_${actualTargetUserId}`;
-              const completionStatus = doseCompletionStatus[statusKey] || {
-                morning: false,
-                afternoon: false,
-                evening: false
-              };
-              
-              const morningCompleted = completionStatus.morning;
-              const afternoonCompleted = completionStatus.afternoon;  
-              const eveningCompleted = completionStatus.evening;
-              
-              const allCompleted = (todaySchedule.morning === 0 || morningCompleted) &&
-                                 (todaySchedule.afternoon === 0 || afternoonCompleted) &&
-                                 (todaySchedule.evening === 0 || eveningCompleted);
-              
-              if (allCompleted) {
-                // 🔥 모든 복용이 완료된 경우 완료 메시지 표시
-                return (
-                  <View style={[
-                    styles.completionMessageSection,
-                    { backgroundColor: isDark ? '#1a3d1a' : '#E8F5E8' }
-                  ]}>
-                    <View style={styles.completionIconContainer}>
-                      <Feather name="check-circle" size={20} color={colors.SUCCESS.DEFAULT} />
-                    </View>
-                    <Text style={[styles.completionMessage, { color: colors.SUCCESS.DEFAULT }]}>
-                      오늘의 복용이 완료되었습니다! 🎉
-                    </Text>
-                    <Text style={[styles.completionSubMessage, { color: themeColors.text }]}>
-                      총 {todaySchedule.total}정 복용 완료
-                    </Text>
-                  </View>
-                );
-              } else {
-                // 🔥 아직 복용하지 않은 시간대가 있는 경우 스케줄 정보만 표시
-                return (
-                  <View style={[
-                    styles.doseCompletionSection,
-                    { backgroundColor: isDark ? '#2a2a2a' : '#f8f9fa' }
-                  ]}>
-                    <Text style={[styles.sectionTitle, { color: themeColors.text, marginBottom: 8, textAlign: 'center' }]}>
-                      📋 오늘의 복용 스케줄: {displayInfo.scheduleText}
-                    </Text>
-                    <Text style={[styles.medicineDetail, { color: isDark ? '#888' : '#666', textAlign: 'center', fontSize: 12 }]}>
-                      🔥 RFID 태그를 디스펜서에 인식하면 자동으로 배출됩니다
-                    </Text>
-                  </View>
-                );
-              }
-            })()}
-
-            {/* 🔥 오늘 스케줄이 없는 경우 안내 메시지 */}
-            {isTargetUser && !todaySchedule.isScheduledDay && (
-              <View style={[
-                styles.noScheduleSection,
-                { backgroundColor: isDark ? '#2a2a2a' : '#f5f5f5' }
-              ]}>
-                <Text style={[styles.noScheduleText, { color: isDark ? '#888' : '#666' }]}>
-                  오늘은 복용하지 않는 날입니다
-                </Text>
-              </View>
-            )}
-            
-            {/* 버튼 영역 - 권한별 구분 */}
-            <View style={styles.medicineActions}>
-              {/* 🔥 상세정보는 모든 사용자가 볼 수 있도록 수정 */}
-              <TouchableOpacity
-                style={[styles.actionButton, styles.detailButton]}
-                onPress={handleViewMedicineDetail}
-              >
-                <Feather name="info" size={16} color={colors.PRIMARY.DEFAULT} />
-                <Text style={[styles.actionButtonText, { color: colors.PRIMARY.DEFAULT }]}>
-                  상세정보
-                </Text>
-              </TouchableOpacity>
-              
-                            
-                              {/* 🔥 수정: 권한에 따른 스케줄 버튼 제어 - 부모는 모든 약품 편집 가능 */}
-                                {/* 스케줄 버튼 - 부모는 모든 약물 관리 가능 */}
-                {(() => {
-                  // 🎯 부모는 모든 약물 관리 가능, 자녀는 타인 약물 접근 불가
-                  const isOthersOnly = !isTargetUser && medicineType !== 'family_common';
-                  const hasSchedulePermission = userType === 'parent' || !isOthersOnly;
-                  
-                  return (
-              <TouchableOpacity
-                style={[
-                  styles.actionButton, 
-                  styles.scheduleButton,
-                        !hasSchedulePermission && { 
-                          opacity: 0.3,
-                          backgroundColor: '#f0f0f0'
-                        }
-                      ]}
-                      onPress={hasSchedulePermission ? handleSchedulePress : undefined}
-                      disabled={!hasSchedulePermission}
-                    >
-                      <Feather 
-                        name={hasSchedulePermission ? 'calendar' : 'lock'} 
-                        size={16} 
-                        color={hasSchedulePermission ? colors.SUCCESS.DEFAULT : '#ccc'} 
-                      />
-                      <Text style={[
-                        styles.actionButtonText, 
-                        { 
-                          color: hasSchedulePermission ? colors.SUCCESS.DEFAULT : '#ccc'
-                        }
-                      ]}>
-                        {hasSchedulePermission ? '스케줄' : '접근 불가'}
-                </Text>
-              </TouchableOpacity>
-                  );
-                })()}
-
-            </View>
-            
-            {/* 🔥 타인 약물 정보 표시 - 부모는 관리 가능한 정보로 표시 */}
-            {!isTargetUser && ownerInfo && (
-              <View style={{ 
-                marginTop: 8, 
-                padding: 8, 
-                backgroundColor: medicineType === 'others_only' ? (isDark ? '#FF6B6B20' : '#FFE5E5') : (isDark ? '#007AFF20' : '#E3F2FD'), 
-                borderRadius: 6 
-              }}>
-                <Text style={{ 
-                  color: medicineType === 'others_only' ? '#FF6B6B' : '#007AFF', 
-                  fontSize: 12, 
-                  textAlign: 'center' 
-                }}>
-                  {userType === 'parent' 
-                    ? (medicineType === 'others_only' 
-                        ? '자녀의 개인 약물 (부모 관리 가능)' 
-                        : '가족 공통 약물')
-                    : (medicineType === 'others_only' 
-                    ? '다른 가족 구성원의 개인 전용 약물' 
-                        : '가족 공통 약물 (참고용)')
-                  }
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </Swipeable>
-    );
-  };
-
-  const handleMedicineSearch = async () => {
+  // 🔥 handleMedicineSearch를 useCallback으로 메모이제이션
+  const handleMedicineSearch = useCallback(async () => {
     const userJson = await AsyncStorage.getItem(USER_KEY);
     const user = userJson ? JSON.parse(userJson) : null;
     
@@ -1940,9 +1456,11 @@ function MainHomeScreen() {
       return;
     }
 
+    if (__DEV__) {
     console.log('약검색 버튼 클릭:', user.role);
+    }
 
-    // 부모 계정인 경우 디스펜서 연동 상태 체크
+    // 보호자 계정인 경우 디스펜서 연동 상태 체크
     if (user.role === 'parent') {
       if (!user.machine_id) {
         // 디스펜서가 등록되지 않은 경우 설정화면으로 이동
@@ -1957,7 +1475,7 @@ function MainHomeScreen() {
       }
     }
 
-    // 디스펜서가 등록된 경우 또는 자식 계정인 경우 검색 화면으로 이동
+    // 디스펜서가 등록된 경우 또는 자녀 계정인 경우 검색 화면으로 이동
     try {
       (navigation as any).navigate('MedicineSearch', { searchType: 'medicine' });
     } catch (error) {
@@ -1968,7 +1486,7 @@ function MainHomeScreen() {
         position: 'bottom',
       });
     }
-  };
+  }, [navigation]);
 
   const renderMemberItem = ({ item }: { item: FamilyMember }) => (
     <TouchableOpacity
@@ -1981,177 +1499,12 @@ function MainHomeScreen() {
       <Text style={[styles.memberName, { color: themeColors.text }]}>{item.name}</Text>
       <Text style={[styles.memberAge, { color: themeColors.text }]}>나이: {item.age}세</Text>
       <Text style={[styles.memberRole, { color: themeColors.text }]}>
-        {item.role === 'parent' ? '부모 계정' : '자식 계정'}
+        {item.role === 'parent' ? '보호자 계정' : '자녀 계정'}
       </Text>
     </TouchableOpacity>
   );
 
-  const renderSupplementItem = (supplement: NutritionalSupplement, index: number) => {
-    const handleViewSupplementDetail = () => {
-      console.log('🔥 [renderSupplementItem] 영양제 상세보기:', supplement.name, supplement.id || supplement.name);
-      handleViewItemDetail('supplement', supplement);
-    };
-
-    const handleSupplementScheduleEdit = () => {
-      (navigation as any).navigate('SupplementScheduleEdit', {
-        supplementId: supplement.id || supplement.name, // 영양제 ID 또는 이름 사용
-        memberId: selectedMember?.user_id || '',
-        supplementName: supplement.name,
-        slot: supplement.dispenserSlot,
-      });
-    };
-
-    const formatDate = (dateStr: string | undefined) => {
-      if (!dateStr) return '날짜 없음';
-      try {
-        const date = new Date(dateStr);
-        return date.toLocaleDateString('ko-KR', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        });
-      } catch {
-        return dateStr;
-      }
-    };
-
-    // 🔥 영양제도 3색 테두리 시스템 적용
-    const analyzeSupplementType = () => {
-      const currentUserId = selectedMember?.user_id;
-      const targetUsers = supplement.target_users;
-      
-      // 권한 체크: 가족 공통이거나 현재 사용자가 포함된 경우
-      const isTargetUser = !targetUsers || 
-                          targetUsers.length === 0 || 
-                          targetUsers.includes(currentUserId || '');
-      
-      let borderColor: string;
-      let statusText: string;
-      let bottomMessage: string;
-      let canSchedule: boolean;
-      
-      if (!targetUsers || targetUsers.length === 0) {
-        // 가족 공통 영양제 - 파란색
-        borderColor = '#007AFF';
-        statusText = '🔵 가족 공통';
-        bottomMessage = '모든 가족 구성원이 복용 가능합니다';
-        canSchedule = true;
-      } else if (isTargetUser) {
-        // 개인 영양제이지만 내가 복용하는 영양제 - 노란색
-        borderColor = '#FFD700';
-        statusText = '🟡 내 영양제';
-        bottomMessage = '나에게 지정된 영양제입니다';
-        canSchedule = true;
-      } else {
-        // 개인 영양제이고 다른 사람이 복용하는 영양제 - 빨간색
-        borderColor = '#FF6B6B';
-        statusText = '🔴 타인 영양제';
-        bottomMessage = '다른 사람이 복용하는 영양제입니다';
-        canSchedule = userType === 'parent'; // 부모는 모든 영양제 관리 가능
-      }
-      
-      return {
-        type: isTargetUser ? 'accessible' : 'others_only' as const,
-        borderColor,
-        statusText,
-        canSchedule,
-        bottomMessage
-      };
-    };
-
-    const supplementTypeInfo = analyzeSupplementType();
-
-    return (
-      <Swipeable
-        renderRightActions={(progress, dragX) =>
-          renderRightActions(progress, dragX, () => handleDeleteSupplement(supplement))
-        }
-        enabled={userType === 'parent'}
-      >
-        <View style={[
-          styles.simpleMedicineCard,
-          {
-            backgroundColor: isDark ? themeColors.card : 'white',
-            borderColor: supplementTypeInfo.borderColor,
-            borderWidth: 2, // 테두리 강조
-          }
-        ]}>
-          {/* 상태 표시 */}
-          <View style={styles.statusBadge}>
-            <Text style={[styles.statusText, { color: supplementTypeInfo.borderColor }]}>
-              {supplementTypeInfo.statusText}
-            </Text>
-          </View>
-
-          <View style={styles.medicineInfo}>
-            <Text style={[styles.medicineName, { color: themeColors.text }]}>{supplement.name}</Text>
-            <View style={styles.medicineDetails}>
-              <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                제조사: {supplement.manufacturer || '정보 없음'}
-              </Text>
-              <Text style={[styles.medicineDetail, { color: colors.PRIMARY.DEFAULT, fontWeight: 'bold' }]}>
-                슬롯: {supplement.dispenserSlot || '미배정'}번
-              </Text>
-            </View>
-            <View style={styles.medicineDetails}>
-              <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                시작일: {formatDate(supplement.startDate)}
-              </Text>
-              <Text style={[styles.medicineDetail, { color: themeColors.text }]}>
-                종료일: {formatDate(supplement.endDate)}
-              </Text>
-            </View>
-            
-            {/* 버튼 영역 */}
-            <View style={styles.medicineActions}>
-              <TouchableOpacity
-                style={[styles.actionButton, styles.detailButton]}
-                onPress={handleViewSupplementDetail}
-              >
-                <Feather name="info" size={16} color={colors.PRIMARY.DEFAULT} />
-                <Text style={[styles.actionButtonText, { color: colors.PRIMARY.DEFAULT }]}>상세정보</Text>
-              </TouchableOpacity>
-              
-              {/* 스케줄 버튼 - 타인 영양제인 경우 비활성화 */}
-              <TouchableOpacity
-                style={[
-                  styles.actionButton, 
-                  styles.scheduleButton,
-                  !supplementTypeInfo.canSchedule && { 
-                    opacity: 0.3,
-                    backgroundColor: '#f0f0f0'
-                  }
-                ]}
-                onPress={supplementTypeInfo.canSchedule ? handleSupplementScheduleEdit : undefined}
-                disabled={!supplementTypeInfo.canSchedule}
-              >
-                <Feather 
-                  name={supplementTypeInfo.canSchedule ? 'calendar' : 'lock'} 
-                  size={16} 
-                  color={supplementTypeInfo.canSchedule ? colors.SUCCESS.DEFAULT : '#ccc'} 
-                />
-                <Text style={[
-                  styles.actionButtonText, 
-                  { 
-                    color: supplementTypeInfo.canSchedule ? colors.SUCCESS.DEFAULT : '#ccc'
-                  }
-                ]}>
-                  {supplementTypeInfo.canSchedule ? '스케줄' : '접근 불가'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* 하단 안내 메시지 */}
-            <View style={[styles.bottomMessage, { backgroundColor: supplementTypeInfo.borderColor + '10' }]}>
-              <Text style={[styles.bottomMessageText, { color: supplementTypeInfo.borderColor }]}>
-                💡 {supplementTypeInfo.bottomMessage}
-              </Text>
-            </View>
-          </View>
-        </View>
-      </Swipeable>
-    );
-  };
+  // renderSupplementItem 함수는 SupplementItem 컴포넌트로 분리됨
 
   const handleNavigateToSchedule = async (medicine: Medicine) => {
     if (selectedMember) {
@@ -2161,22 +1514,17 @@ function MainHomeScreen() {
         medicineName: medicine.name
       });
       
-      // 🔥 로컬 JSON에서 처방 정보 찾기
+      // 🔥 서버 API에서 처방 정보 찾기
       let useMethodQesitm: string | undefined;
       try {
-        const medicineData = require('../assets/medicine.json');
-        if (Array.isArray(medicineData)) {
-          const found = medicineData.find((item: any) => 
-            item['품목일련번호 [ITEMSEQ] '] === medicine.medi_id ||
-            item['제품명 [ITEMNAME] '] === medicine.name
-          );
-          if (found) {
-            useMethodQesitm = found['문항2(사용법) [USEMETHODQESITM] '];
-            console.log('✅ 로컬 JSON에서 처방 정보 찾음:', useMethodQesitm);
-          }
+        const { findMedicineMasterByName } = await import('../api/medicineMaster');
+        const found = await findMedicineMasterByName(medicine.name);
+        if (found) {
+          useMethodQesitm = found.intake_method || '';
+          console.log('✅ 서버 API에서 처방 정보 찾음:', useMethodQesitm);
         }
       } catch (error) {
-        console.log('⚠️ 로컬 JSON에서 처방 정보 조회 실패:', error);
+        console.log('⚠️ 서버 API에서 처방 정보 조회 실패:', error);
       }
       
       (navigation as any).navigate('MedicineScheduleEdit', {
@@ -2196,7 +1544,7 @@ function MainHomeScreen() {
 
     console.log(`🔍 약물 목록 변경 감지 - 시간대별 복용량 조회 시작`);
     
-    // 🔥 자식 계정을 위한 개선된 권한 필터링
+    // 🔥 자녀 계정을 위한 개선된 권한 필터링
     const accessibleMedicines = medicineList.filter(medicine => {
       // 서버에서 반환된 permission 정보 사용
       const permission = (medicine as any).permission;
@@ -2209,10 +1557,10 @@ function MainHomeScreen() {
       });
       
       if (userType === 'parent') {
-        // 부모는 모든 약물에 접근 가능
+        // 보호자는 모든 약물에 접근 가능
         return true;
       } else {
-        // 자식은 본인 약물과 공통 약물만 접근 가능
+        // 자녀는 본인 약물과 공통 약물만 접근 가능
         return permission === 'own' || permission === 'common';
       }
     });
@@ -2236,405 +1584,218 @@ function MainHomeScreen() {
       if (!dailySchedules[scheduleKey]) {
         console.log(`🔍 [${medicine.name}] 스케줄 로딩: ${actualTargetUserId}`);
         loadDailySchedule(medicine.medi_id, actualTargetUserId);
-        // 🔥 복용 완료 상태 조회 활성화 (target_users 기반)
-        loadDoseCompletionStatus(medicine.medi_id, actualTargetUserId);
+        // 🔥 복용 완료 상태 조회 활성화 (target_users 기반, 배치 처리)
+        // 🔥 상태 업데이트를 안정적으로 처리하여 깜빡임 방지
+        loadDoseCompletionStatus(medicine.medi_id, actualTargetUserId).then(status => {
+          const statusKey = `${medicine.medi_id}_${actualTargetUserId}`;
+          setDoseCompletionStatus(prev => {
+            // 🔥 이전 상태와 비교하여 실제로 변경된 경우만 업데이트
+            const prevStatus = prev[statusKey];
+            if (prevStatus && 
+                prevStatus.morning === status.morning &&
+                prevStatus.afternoon === status.afternoon &&
+                prevStatus.evening === status.evening) {
+              return prev; // 변경사항 없으면 이전 상태 반환 (리렌더링 방지)
+            }
+            return {
+              ...prev,
+              [statusKey]: status
+            };
+          });
+        }).catch(error => {
+          // 🔥 에러 발생 시 무시 (깜빡임 방지)
+          if (__DEV__) {
+            logger.warn('복용 완료 상태 조회 실패', error);
+          }
+        });
       }
     });
-  }, [medicineList, selectedMember?.user_id, userType]);
+  }, [medicineList, selectedMember?.user_id, userType, loadDoseCompletionStatus]);
 
-  // 🔥 스케줄 편집 후 돌아왔을 때 새로고침 처리
+  // 🔥 대시보드에서 상태 변경 시 메인 화면 업데이트를 위한 함수
+  const updateDoseCompletionStatus = useCallback(async (medicineId: string, userId: string, timeOfDay: 'morning' | 'afternoon' | 'evening') => {
+    try {
+      const statusKey = `${medicineId}_${userId}`;
+      // 🔥 해당 약물의 복용 완료 상태를 다시 조회
+      const status = await loadDoseCompletionStatus(medicineId, userId);
+      
+      setDoseCompletionStatus(prev => {
+        const prevStatus = prev[statusKey];
+        // 🔥 해당 시간대만 업데이트
+        const updatedStatus = {
+          ...prevStatus,
+          ...status,
+          [timeOfDay]: status[timeOfDay]
+        };
+        
+        return {
+          ...prev,
+          [statusKey]: updatedStatus
+        };
+      });
+      
+      if (__DEV__) {
+        console.log(`✅ [MainHomeScreen] 복용 상태 업데이트: ${medicineId}, ${timeOfDay}, ${status[timeOfDay]}`);
+      }
+    } catch (error) {
+      if (__DEV__) {
+        console.error(`❌ [MainHomeScreen] 복용 상태 업데이트 실패:`, error);
+      }
+    }
+  }, [loadDoseCompletionStatus]);
+
+  // 🔥 스케줄 편집 후 돌아왔을 때 새로고침 처리 (debounce 적용)
+  const lastRefreshRef = useRef<number>(0);
+  const lastRefreshDateRef = useRef<string>('');
   useFocusEffect(
     useCallback(() => {
+      // 🔥 24시간 기준 초기화: 날짜가 바뀌었는지 확인
+      const today = new Date().toISOString().split('T')[0];
+      const isNewDay = lastRefreshDateRef.current !== today;
+      
       // 스케줄 편집 후 돌아온 경우 시간대별 복용량 새로고침
-      if (selectedMember?.user_id && medicineList.length > 0) {
-        console.log('🔄 화면 포커스 - 시간대별 복용량 새로고침');
+      if (selectedMember?.user_id && (medicineList.length > 0 || supplementList.length > 0)) {
+        const now = Date.now();
+        // 🔥 1초 이내 중복 호출 방지 (깜빡임 방지)
+        if (now - lastRefreshRef.current < 1000 && !isNewDay) {
+          logger.debug('🔄 [Focus] 중복 호출 방지 (1초 이내)');
+          return;
+        }
+        lastRefreshRef.current = now;
+        lastRefreshDateRef.current = today;
         
-        // 기존 스케줄 및 복용 완료 상태 데이터 초기화
-        setDailySchedules({});
-        setDoseCompletionStatus({});
+        logger.debug(`🔄 화면 포커스 - 시간대별 복용량 새로고침 (날짜: ${today}, 새 날짜: ${isNewDay})`);
         
-        // 🔥 권한이 있는 약물들의 시간대별 복용량 및 복용 완료 상태 재조회
-        const accessibleMedicines = medicineList.filter(medicine => {
-          // 서버에서 반환된 permission 정보 사용
-          const permission = (medicine as any).permission;
-          
-          if (userType === 'parent') {
-            // 부모는 모든 약물에 접근 가능
-            return true;
-          } else {
-            // 자식은 본인 약물과 공통 약물만 접근 가능
-            return permission === 'own' || permission === 'common';
-          }
-        });
+        // 🔥 날짜가 바뀌었으면 복용 완료 상태 초기화 (24시간 기준 초기화)
+        if (isNewDay) {
+          setDoseCompletionStatus({});
+          logger.debug('🔄 날짜 변경 감지 - 복용 완료 상태 초기화');
+        }
+        
+        // 🔥 상태 업데이트를 배치로 처리 (깜빡임 방지)
+        const statusUpdates: Record<string, { morning: boolean; afternoon: boolean; evening: boolean }> = {};
+        
+        // 🔥 약물 복용 상태 조회 (오늘 날짜 명시)
+        const medicinePromises = medicineList.length > 0 ? (() => {
+          // 🔥 권한이 있는 약물들의 시간대별 복용량 및 복용 완료 상태 재조회
+          const accessibleMedicines = medicineList.filter(medicine => {
+            // 서버에서 반환된 permission 정보 사용
+            const permission = (medicine as any).permission;
+            
+            if (userType === 'parent') {
+              // 보호자는 모든 약물에 접근 가능
+              return true;
+            } else {
+              // 자녀는 본인 약물과 공통 약물만 접근 가능
+              return permission === 'own' || permission === 'common';
+            }
+          });
 
-        console.log(`🔄 [Focus] 접근 가능한 약물: ${accessibleMedicines.length}/${medicineList.length}개`);
+          logger.debug(`🔄 [Focus] 접근 가능한 약물: ${accessibleMedicines.length}/${medicineList.length}개`);
 
-        accessibleMedicines.forEach(medicine => {
+          return accessibleMedicines.map(async (medicine) => {
+            // 🔥 target_users 기반으로 실제 스케줄이 저장된 사용자 결정
+            let actualTargetUserId = selectedMember.user_id;
+            if (medicine.target_users && medicine.target_users.length > 0) {
+              actualTargetUserId = medicine.target_users[0];
+            }
+            
+            logger.debug(`🔄 [Focus] ${medicine.name} 스케줄 재로딩: ${actualTargetUserId}`);
+            await loadDailySchedule(medicine.medi_id, actualTargetUserId);
+            
+            // 🔥 복용 완료 상태 조회 (target_users 기반)
+            const statusKey = `${medicine.medi_id}_${actualTargetUserId}`;
+            setLoadingDoseStatus(prev => new Set(prev).add(statusKey)); // 🔥 로딩 시작
+            try {
+              const status = await loadDoseCompletionStatus(medicine.medi_id, actualTargetUserId);
+              statusUpdates[statusKey] = status;
+            } catch (error) {
+              logger.warn(`[Focus] ${medicine.name} 복용 상태 조회 실패:`, error);
+            } finally {
+              // 🔥 로딩 완료
+              setLoadingDoseStatus(prev => {
+                const next = new Set(prev);
+                next.delete(statusKey);
+                return next;
+              });
+            }
+          });
+        })() : [];
+
+        // 🔥 영양제 복용 상태 조회
+        const supplementPromises = supplementList.length > 0 ? supplementList.map(async (supplement) => {
           // 🔥 target_users 기반으로 실제 스케줄이 저장된 사용자 결정
           let actualTargetUserId = selectedMember.user_id;
-          if (medicine.target_users && medicine.target_users.length > 0) {
-            actualTargetUserId = medicine.target_users[0];
+          if (supplement.target_users && supplement.target_users.length > 0) {
+            actualTargetUserId = supplement.target_users[0];
           }
           
-          console.log(`🔄 [Focus] ${medicine.name} 스케줄 재로딩: ${actualTargetUserId}`);
-          loadDailySchedule(medicine.medi_id, actualTargetUserId);
-          // 🔥 복용 완료 상태 조회 활성화 (target_users 기반)
-          loadDoseCompletionStatus(medicine.medi_id, actualTargetUserId);
+          logger.debug(`🔄 [Focus] ${supplement.name} 스케줄 재로딩: ${actualTargetUserId}`);
+          await loadSupplementSchedule(supplement.id || '', actualTargetUserId);
+          
+          // 🔥 복용 완료 상태 조회 (target_users 기반)
+          const statusKey = `${supplement.id}_${actualTargetUserId}`;
+          setLoadingDoseStatus(prev => new Set(prev).add(statusKey)); // 🔥 로딩 시작
+          try {
+            const status = await loadDoseCompletionStatus(supplement.id || '', actualTargetUserId);
+            statusUpdates[statusKey] = status;
+          } catch (error) {
+            logger.warn(`[Focus] ${supplement.name} 복용 상태 조회 실패:`, error);
+          } finally {
+            // 🔥 로딩 완료
+            setLoadingDoseStatus(prev => {
+              const next = new Set(prev);
+              next.delete(statusKey);
+              return next;
+            });
+          }
+        }) : [];
+
+        // 🔥 약물과 영양제 모두 병렬 처리
+        Promise.all([...medicinePromises, ...supplementPromises]).then(() => {
+
+          setDoseCompletionStatus(prev => {
+            // 🔥 날짜가 바뀌었으면 새 상태로 완전히 교체
+            if (isNewDay) {
+              return statusUpdates;
+            }
+            
+            let hasChanges = false;
+            const newStatus: typeof prev = {};
+            
+            // 기존 상태 복사
+            Object.keys(prev).forEach(key => {
+              newStatus[key] = prev[key];
+            });
+            
+            // 새 상태와 비교하여 변경된 것만 업데이트
+            Object.keys(statusUpdates).forEach(key => {
+              const newStatusValue = statusUpdates[key];
+              const currentStatusValue = prev[key];
+              
+              // 상태가 실제로 변경된 경우에만 업데이트
+              if (!currentStatusValue || 
+                  currentStatusValue.morning !== newStatusValue.morning ||
+                  currentStatusValue.afternoon !== newStatusValue.afternoon ||
+                  currentStatusValue.evening !== newStatusValue.evening) {
+                newStatus[key] = newStatusValue;
+                hasChanges = true;
+              }
+            });
+            
+            // 변경사항이 없으면 이전 객체 반환 (재렌더링 방지)
+            if (!hasChanges) {
+              return prev;
+            }
+            
+            return newStatus;
+          });
         });
       }
-    }, [selectedMember?.user_id, medicineList, userType])
+    }, [selectedMember?.user_id, medicineList, supplementList, userType, loadDailySchedule, loadSupplementSchedule, loadDoseCompletionStatus])
   );
 
-  // 🔥 하루 전체 스케줄 배출 처리 함수 - 데일리키트용
-  const handleCompleteDailySchedule = async (
-    medicine: Medicine,
-    targetUserId: string
-  ) => {
-    const completingKey = `${medicine.medi_id}_${targetUserId}_daily`;
-    
-    try {
-      setCompletingDose(prev => ({ ...prev, [completingKey]: true }));
-      
-      console.log('📦 [DailySchedule] 하루 전체 스케줄 배출 시작:', {
-        medicine: medicine.name,
-        targetUserId,
-        schedule: dailySchedules[medicine.medi_id]
-      });
-      
-      const dailySchedule = dailySchedules[medicine.medi_id];
-      if (!dailySchedule) {
-        throw new Error('스케줄 정보를 찾을 수 없습니다.');
-      }
-      
-             const totalDose = dailySchedule.total;
-       
-       // 슬롯 정보 확인
-       if (!medicine.slot) {
-         throw new Error('약물 슬롯 정보가 없습니다.');
-       }
-       
-       // 1. 실제 약물 배출 (하루치 전체)
-       let machine_id: string;
-       
-       try {
-         const machineIdResponse = await userApi.getUserMachineId(targetUserId);
-         if (!machineIdResponse.success || !machineIdResponse.data?.machine_id) {
-           throw new Error('기기 정보를 찾을 수 없습니다.');
-         }
-         machine_id = machineIdResponse.data.machine_id;
-         
-        console.log('📦 [DailySchedule] 하루치 배출 요청:', {
-          machine_id,
-          medi_id: medicine.medi_id,
-          slot: medicine.slot,
-          count: totalDose
-        });
-        
-        const dispenseResult = await scheduleDispense(
-          machine_id,
-          targetUserId,
-          medicine.medi_id,
-          medicine.slot,
-          totalDose,
-          '하루치 일괄 배출'
-        );
-        
-        if (!dispenseResult.success) {
-          throw new Error(dispenseResult.error?.message || '배출에 실패했습니다.');
-        }
-        
-        console.log('✅ [DailySchedule] 하루치 배출 성공');
-        
-      } catch (dispenseError) {
-        console.error('🔥 [DailySchedule] 배출 실패:', dispenseError);
-        throw new Error(`배출 실패: ${dispenseError instanceof Error ? dispenseError.message : '알 수 없는 오류'}`);
-      }
-      
-             // 2. 모든 시간대 복용 기록 저장
-       const timeSlots = ['morning', 'afternoon', 'evening'] as const;
-       
-       for (const timeOfDay of timeSlots) {
-         const dosage = dailySchedule[timeOfDay];
-         if (dosage > 0) {
-           try {
-             const response = await scheduleApi.completeDose(medicine.medi_id, targetUserId, timeOfDay, dosage);
-             if (!response.success) {
-               console.error(`🔥 [DailySchedule] ${timeOfDay} 복용 기록 실패:`, response.error);
-             } else {
-               console.log(`✅ [DailySchedule] ${timeOfDay} 복용 기록 성공`);
-             }
-           } catch (recordError) {
-             console.error(`🔥 [DailySchedule] ${timeOfDay} 복용 기록 오류:`, recordError);
-           }
-         }
-       }
-      
-      Toast.show({
-        type: 'success',
-        text1: '📦 하루치 배출 완료',
-        text2: `${medicine.name} 총 ${totalDose}정이 배출되었습니다. 데일리키트에 나눠서 보관하세요.`,
-        position: 'top',
-        visibilityTime: 4000,
-      });
-      
-      // 3. 복용 완료 상태 즉시 업데이트
-      setDoseCompletionStatus(prev => ({
-        ...prev,
-        [medicine.medi_id]: {
-          morning: true,
-          afternoon: true,
-          evening: true
-        }
-      }));
-      
-      // 4. 약물 목록 새로고침
-      if (selectedMember) {
-        await handleSelectMember(selectedMember);
-      }
-      
-    } catch (error) {
-      console.error('📦 [DailySchedule] 하루치 배출/복용 완료 처리 에러:', error);
-      Toast.show({
-        type: 'error',
-        text1: '배출 실패',
-        text2: error instanceof Error ? error.message : '하루치 배출 처리에 실패했습니다.',
-        position: 'top',
-      });
-    } finally {
-      setCompletingDose(prev => ({ ...prev, [completingKey]: false }));
-    }
-  };
-
-  // 🔥 복용 완료 처리 함수 (target_users 기반) - 실제 약물 배출 포함
-  const handleCompleteDoseWithTarget = async (
-    medicine: Medicine, 
-    timeOfDay: 'morning' | 'afternoon' | 'evening',
-    targetUserId: string
-  ) => {
-    if (!selectedMember) {
-      Toast.show({
-        type: 'error',
-        text1: '가족 구성원을 선택해주세요.',
-        position: 'bottom',
-      });
-      return;
-    }
-
-    const completionKey = `${medicine.medi_id}_${targetUserId}_${timeOfDay}`;
-    
-    // 이미 처리 중인 경우 중복 호출 방지
-    if (completingDose[completionKey]) {
-      return;
-    }
-
-    try {
-      setCompletingDose(prev => ({ ...prev, [completionKey]: true }));
-
-      // 스케줄에서 복용량 가져오기 (target_users 기반)
-      const scheduleKey = `${medicine.medi_id}_${targetUserId}`;
-      const dailySchedule = dailySchedules[scheduleKey];
-      
-      let actualDose = 1; // 기본값
-      if (dailySchedule) {
-        actualDose = timeOfDay === 'morning' ? dailySchedule.morning :
-                     timeOfDay === 'afternoon' ? dailySchedule.afternoon :
-                     dailySchedule.evening;
-      }
-
-      if (actualDose === 0) {
-        Toast.show({
-          type: 'warning',
-          text1: '해당 시간대에 복용 스케줄이 없습니다.',
-          position: 'bottom',
-        });
-        return;
-      }
-
-      // 🔥 1단계: 오늘 스케줄에 따른 약물 배출 실행
-      console.log('🔥 스케줄 기반 배출 시작:', { 
-        medicine: medicine.name, 
-        dose: actualDose, 
-        timeOfDay,
-        targetUser: targetUserId,
-        today: new Date().toISOString().split('T')[0]
-      });
-      
-      // 사용자의 machine_id 조회
-      const machineIdResponse = await userApi.getUserMachineId(targetUserId);
-      if (!machineIdResponse.success || !machineIdResponse.data?.machine_id) {
-        throw new Error('디스펜서 기기 정보를 찾을 수 없습니다.');
-      }
-      
-      const machine_id = machineIdResponse.data.machine_id;
-      console.log('🔍 사용자 machine_id 확인:', machine_id);
-
-      // 약물 배출 API 호출 (스케줄 기반 자동배출)
-      const dispenseResult = await scheduleDispense(
-        machine_id,
-        targetUserId,
-        medicine.medi_id,
-        medicine.slot || 1,
-        actualDose,
-        '개별 시간대 배출'
-      );
-
-      if (!dispenseResult.success) {
-        throw new Error(dispenseResult.error?.message || '약물 배출에 실패했습니다.');
-      }
-
-      console.log('✅ 약물 배출 성공, 복용 기록 저장 시작');
-
-      // 🔥 2단계: 배출 성공 후 복용 기록 저장
-      const response = await scheduleApi.completeDose(
-        medicine.medi_id,
-        targetUserId,
-        timeOfDay,
-        actualDose
-      );
-
-      if (response.success) {
-        const timeLabel = timeOfDay === 'morning' ? '아침' : 
-                         timeOfDay === 'afternoon' ? '점심' : '저녁';
-        Toast.show({
-          type: 'success',
-          text1: `${timeLabel} 복용 완료`,
-          text2: `${medicine.name} ${actualDose}정이 스케줄에 따라 배출되었습니다.`,
-          position: 'bottom',
-        });
-
-        // 🔥 복용 완료 상태 즉시 업데이트 (target_users 기반)
-        const statusKey = `${medicine.medi_id}_${targetUserId}`;
-        setDoseCompletionStatus(prev => ({
-          ...prev,
-          [statusKey]: {
-            morning: prev[statusKey]?.morning || false,
-            afternoon: prev[statusKey]?.afternoon || false,
-            evening: prev[statusKey]?.evening || false,
-            [timeOfDay]: true
-          }
-        }));
-
-        // 🔥 즉시 데이터 새로고침 (target_users 기반)
-        await Promise.all([
-          loadDailySchedule(medicine.medi_id, targetUserId),
-          loadDoseCompletionStatus(medicine.medi_id, targetUserId)
-        ]);
-        
-        console.log(`✅ [handleCompleteDoseWithTarget] 배출 + 기록 완료: ${statusKey}`);
-      } else {
-        throw new Error(response.error?.message || '복용 기록 저장에 실패했습니다.');
-      }
-
-    } catch (error) {
-      console.error('약물 배출/복용 완료 처리 에러:', error);
-      Toast.show({
-        type: 'error',
-        text1: '복용 실패',
-        text2: error instanceof Error ? error.message : '복용 처리에 실패했습니다.',
-        position: 'bottom',
-      });
-    } finally {
-      setCompletingDose(prev => ({ ...prev, [completionKey]: false }));
-    }
-  };
-
-  // 🔥 기존 복용 완료 처리 함수 (호환성 유지)
-  const handleCompleteDose = async (
-    medicine: Medicine, 
-    timeOfDay: 'morning' | 'afternoon' | 'evening'
-  ) => {
-    if (!selectedMember) {
-      Toast.show({
-        type: 'error',
-        text1: '가족 구성원을 선택해주세요.',
-        position: 'bottom',
-      });
-      return;
-    }
-
-    const completionKey = `${medicine.medi_id}_${selectedMember.user_id}_${timeOfDay}`;
-    
-    // 이미 처리 중인 경우 중복 호출 방지
-    if (completingDose[completionKey]) {
-      return;
-    }
-
-    try {
-      setCompletingDose(prev => ({ ...prev, [completionKey]: true }));
-
-      // 스케줄에서 복용량 가져오기
-      const scheduleKey = `${medicine.medi_id}_${selectedMember.user_id}`;
-      const dailySchedule = dailySchedules[scheduleKey];
-      
-      let actualDose = 1; // 기본값
-      if (dailySchedule) {
-        actualDose = timeOfDay === 'morning' ? dailySchedule.morning :
-                     timeOfDay === 'afternoon' ? dailySchedule.afternoon :
-                     dailySchedule.evening;
-      }
-
-      if (actualDose === 0) {
-        Toast.show({
-          type: 'warning',
-          text1: '해당 시간대에 복용 스케줄이 없습니다.',
-          position: 'bottom',
-        });
-        return;
-      }
-
-      // API 호출
-      const response = await scheduleApi.completeDose(
-        medicine.medi_id,
-        selectedMember.user_id,
-        timeOfDay,
-        actualDose
-      );
-
-      if (response.success) {
-        Toast.show({
-          type: 'success',
-          text1: '복용 완료',
-          text2: `${actualDose}정 복용이 기록되었습니다.`,
-          position: 'bottom',
-        });
-
-        // 🔥 복용 완료 상태 즉시 업데이트
-        const statusKey = `${medicine.medi_id}_${selectedMember.user_id}`;
-        setDoseCompletionStatus(prev => ({
-          ...prev,
-          [statusKey]: {
-            morning: prev[statusKey]?.morning || false,
-            afternoon: prev[statusKey]?.afternoon || false,
-            evening: prev[statusKey]?.evening || false,
-            [timeOfDay]: true
-          }
-        }));
-
-        // 🔥 즉시 데이터 새로고침
-        if (selectedMember) {
-          await Promise.all([
-            loadDailySchedule(medicine.medi_id, selectedMember.user_id),
-            loadDoseCompletionStatus(medicine.medi_id, selectedMember.user_id)
-          ]);
-          
-          console.log(`✅ [handleCompleteDose] 상태 업데이트 완료: ${statusKey}`);
-        }
-      } else {
-        throw new Error(response.error?.message || '복용 기록 저장에 실패했습니다.');
-      }
-
-    } catch (error) {
-      console.error('복용 완료 처리 에러:', error);
-      Toast.show({
-        type: 'error',
-        text1: '오류',
-        text2: error instanceof Error ? error.message : '복용 완료 처리에 실패했습니다.',
-        position: 'bottom',
-      });
-    } finally {
-      setCompletingDose(prev => ({ ...prev, [completionKey]: false }));
-    }
-  };
+  // 🔥 handleCompleteDailySchedule, handleCompleteDoseWithTarget, handleCompleteDose는 useDoseCompletion 훅에서 제공됨 (중복 제거 완료)
 
   // 🔥 현재 시간 기준으로 시간대 판단 함수 추가
   const getCurrentTimeOfDay = (): 'morning' | 'afternoon' | 'evening' => {
@@ -2677,19 +1838,57 @@ function MainHomeScreen() {
     }
   }, [medicineList, selectedMember]);
 
-  if (loading) {
+  // 🔥 모든 데이터가 로드되었는지 확인 (필수 데이터만 체크)
+  const isAllDataLoaded = useMemo(() => {
+    // 필수: 가족 구성원, 선택된 멤버
+    // 약물 목록은 로드 중이어도 표시 가능 (점진적 로딩)
+    // 선택: 영양제, 스케줄, 복용 상태는 로드 중이어도 표시 가능
+    const essentialLoaded = !loadingStates.familyMembers && 
+                            selectedMember !== null &&
+                            !loading;
+    
+    return essentialLoaded;
+  }, [loadingStates, selectedMember, loading]);
+
+  // 🔥 초기 로딩 중이거나 모든 데이터가 로드되지 않았으면 스켈레톤 UI 표시
+  if (loading || !isAllDataLoaded) {
     return (
-      <SafeAreaView style={styles.safeAreaView}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={colors.WHITE} />
-        </View>
+      <SafeAreaView style={[styles.safeAreaView, { backgroundColor: themeColors.background }]} edges={['top']}>
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollViewContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={themeColors.text}
+              colors={[themeColors.text || (isDark ? colors.WHITE : colors.BLACK)]}
+            />
+          }
+        >
+          {/* 헤더 스켈레톤 */}
+          <View style={{ padding: 16, marginBottom: 16 }}>
+            <SkeletonLoader width={200} height={24} borderRadius={4} />
+            <SkeletonLoader width={150} height={16} borderRadius={4} style={{ marginTop: 8 }} />
+          </View>
+
+          {/* 약물 목록 스켈레톤 */}
+          <View style={styles.medicineContainer}>
+            <View style={{ marginBottom: 12 }}>
+              <SkeletonLoader width={100} height={20} borderRadius={4} />
+            </View>
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <MedicineCardSkeleton key={idx} isDark={isDark} />
+            ))}
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
 
   if (error || !selectedMember) {
     return (
-      <SafeAreaView style={[styles.safeAreaView, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.safeAreaView, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.errorContainer}>
           <Text style={[styles.errorText, { color: themeColors.text }]}>{error || '데이터를 불러올 수 없습니다.'}</Text>
           {error?.includes('로그인') && (
@@ -2718,7 +1917,7 @@ function MainHomeScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeAreaView, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.safeAreaView, { backgroundColor: themeColors.background }]} edges={['top']}>
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
@@ -2770,306 +1969,269 @@ function MainHomeScreen() {
             onViewDetails={(interaction) => {
               console.log('상호작용 상세 보기:', interaction);
             }}
+            isParent={userType === 'parent'}
+            onDeleteAllInteractions={async () => {
+              try {
+                const userJson = await AsyncStorage.getItem('@user');
+                if (!userJson) {
+                  Toast.show({ type: 'error', text1: '사용자 정보를 찾을 수 없습니다.' });
+                  return;
+                }
+                
+                const user = JSON.parse(userJson);
+                
+                if (!interactionResult) {
+                  Toast.show({ type: 'error', text1: '상호작용 정보를 찾을 수 없습니다.' });
+                  return;
+                }
+                
+                // 🔥 상호작용이 발생한 모든 약물 추출 (중복 제거)
+                const uniqueMedicines = new Map<string, {
+                  mediId: string;
+                  ownerId: string;
+                  name: string;
+                }>();
+                
+                interactionResult.interactions.forEach((interaction: any) => {
+                  // drugA 처리 - 모든 mediId와 ownerId 조합 처리
+                  const drugAMediIds = interaction.drugAMediIds || (interaction.drugAMediId ? [interaction.drugAMediId] : []);
+                  const drugAOwners = interaction.drugAOwners || (interaction.drugAOwner ? [interaction.drugAOwner] : []);
+                  
+                  drugAMediIds.forEach((mediId: string, idx: number) => {
+                    const owner = drugAOwners[idx] || drugAOwners[0];
+                    if (mediId && owner?.ownerId) {
+                      const key = `${mediId}_${owner.ownerId}`;
+                      if (!uniqueMedicines.has(key)) {
+                        uniqueMedicines.set(key, {
+                          mediId,
+                          ownerId: owner.ownerId,
+                          name: interaction.drugA
+                        });
+                      }
+                    }
+                  });
+                  
+                  // drugB 처리 - 모든 mediId와 ownerId 조합 처리
+                  const drugBMediIds = interaction.drugBMediIds || (interaction.drugBMediId ? [interaction.drugBMediId] : []);
+                  const drugBOwners = interaction.drugBOwners || (interaction.drugBOwner ? [interaction.drugBOwner] : []);
+                  
+                  drugBMediIds.forEach((mediId: string, idx: number) => {
+                    const owner = drugBOwners[idx] || drugBOwners[0];
+                    if (mediId && owner?.ownerId) {
+                      const key = `${mediId}_${owner.ownerId}`;
+                      if (!uniqueMedicines.has(key)) {
+                        uniqueMedicines.set(key, {
+                          mediId,
+                          ownerId: owner.ownerId,
+                          name: interaction.drugB
+                        });
+                      }
+                    }
+                  });
+                });
+                
+                const medicinesToDelete = Array.from(uniqueMedicines.values());
+                console.log(`🔥 상호작용 약물 일괄 삭제 시작: ${medicinesToDelete.length}개`);
+                
+                // 🔥 삭제 전 약물 정보 저장 (캐시 무효화를 위해)
+                const medicinesInfoBeforeDelete = medicinesToDelete.map(med => {
+                  const fullMedicineInfo = medicineList.find(m => m.medi_id === med.mediId);
+                  return {
+                    ...med,
+                    target_users: fullMedicineInfo?.target_users || []
+                  };
+                });
+                
+                // 모든 약물 삭제 실행
+                let successCount = 0;
+                let failCount = 0;
+                
+                for (const medicine of medicinesToDelete) {
+                  try {
+                    const success = await deleteMedicine(medicine.ownerId, medicine.mediId);
+                    if (success) {
+                      successCount++;
+                    } else {
+                      failCount++;
+                    }
+                  } catch (error) {
+                    console.error(`약물 삭제 실패: ${medicine.name}`, error);
+                    failCount++;
+                  }
+                }
+                
+                if (successCount > 0) {
+                  Toast.show({
+                    type: 'success',
+                    text1: '약물 삭제 완료',
+                    text2: `${successCount}개 약물이 삭제되었습니다.${failCount > 0 ? ` (${failCount}개 실패)` : ''}`,
+                  });
+                  
+                  // 🔥 상호작용 캐시 무효화
+                  invalidateInteractionCaches();
+                  
+                  // 🔥 삭제된 모든 약물의 스케줄 캐시 무효화
+                  const { CacheManager } = await import('../utils/cache');
+                  
+                  medicinesInfoBeforeDelete.forEach(medicine => {
+                    // 🔥 메모리 상태 캐시 삭제
+                    if (medicine.target_users && medicine.target_users.length > 0) {
+                      // target_users가 있는 경우 모든 사용자의 스케줄 캐시 무효화
+                      medicine.target_users.forEach(userId => {
+                        const scheduleKey = `${medicine.mediId}_${userId}`;
+                        clearSchedule(scheduleKey);
+                        console.log(`[MainHomeScreen] 스케줄 캐시 무효화: ${scheduleKey}`);
+                      });
+                    } else {
+                      // target_users가 없으면 소유자의 스케줄 캐시만 무효화
+                      const scheduleKey = `${medicine.mediId}_${medicine.ownerId}`;
+                      clearSchedule(scheduleKey);
+                      console.log(`[MainHomeScreen] 스케줄 캐시 무효화: ${scheduleKey}`);
+                    }
+                    
+                    // 🔥 안전장치: 모든 가족 구성원의 스케줄 캐시도 무효화
+                    familyMembers.forEach(member => {
+                      const scheduleKey = `${medicine.mediId}_${member.user_id}`;
+                      clearSchedule(scheduleKey);
+                    });
+                    
+                    // 🔥 CacheManager의 AsyncStorage 캐시도 삭제
+                    CacheManager.removePattern(medicine.mediId);
+                    console.log(`[MainHomeScreen] CacheManager 캐시 삭제: ${medicine.mediId}`);
+                  });
+                  
+                  // 🔥 모든 스케줄 캐시 초기화 (안전장치)
+                  clearAllSchedules();
+                  
+                  // 🔥 CacheManager의 모든 스케줄 관련 캐시 삭제 (안전장치)
+                  await CacheManager.removePattern('schedule');
+                  await CacheManager.removePattern('medicine');
+                  
+                  // 약물 목록 새로고침
+                  await loadMedicineList();
+                  
+                  // 상호작용 검사 재실행 (강제 새로고침)
+                  setTimeout(async () => {
+                    try {
+                      await checkFamilyDrugInteractions(true);
+                    } catch (error) {
+                      logger.error('가족 약물 상호작용 검사 실패', error);
+                    }
+                  }, 1000);
+                } else {
+                  Toast.show({
+                    type: 'error',
+                    text1: '삭제 실패',
+                    text2: '모든 약물 삭제에 실패했습니다.',
+                  });
+                }
+              } catch (error) {
+                console.error('약물 일괄 삭제 실패:', error);
+                Toast.show({
+                  type: 'error',
+                  text1: '삭제 실패',
+                  text2: '약물 삭제 중 오류가 발생했습니다.',
+                });
+              }
+            }}
           />
         )}
 
         {/* 오늘 날짜 */}
-        <View style={styles.dateHeader}>
-          <View style={styles.dateContainer}>
-            <Text style={[styles.dateMainText, { color: themeColors.text }]}>
-            {new Date().toLocaleDateString('ko-KR', {
-              month: 'long', 
-                day: 'numeric'
-              })}
-            </Text>
-            <Text style={[styles.dateSubText, { color: isDark ? '#888' : '#666' }]}>
-              {new Date().toLocaleDateString('ko-KR', {
-                year: 'numeric',
-              weekday: 'long'
-            })}
-          </Text>
-          </View>
-        </View>
+        <DateHeader isDark={isDark} themeColors={themeColors} />
 
         {/* 사용자 선택 헤더 */}
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionHeaderContent}>
-            <View style={[styles.sectionIcon, { backgroundColor: colors.PRIMARY.DEFAULT + '20' }]}>
-              <Feather 
-                name={userType === 'parent' ? 'users' : 'user'} 
-                size={18} 
-                color={colors.PRIMARY.DEFAULT} 
-              />
-            </View>
-            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-            {userType === 'parent' ? '사용자 선택' : '내 계정'}
-          </Text>
-          </View>
-        </View>
+        <SectionHeader
+          icon={userType === 'parent' ? 'users' : 'user'}
+          title={userType === 'parent' ? '가족 구성원 선택' : '내 계정'}
+          isDark={isDark}
+          themeColors={themeColors}
+        />
 
-        {/* 사용자 계정 선택 박스 - 부모 계정만 표시 */}
-        {userType === 'parent' && (
-          <>
-            <TouchableOpacity 
-              style={[
-                styles.userSelectionCard, 
-                { 
-                  backgroundColor: isDark ? themeColors.card : 'white',
-                  borderColor: colors.PRIMARY.DEFAULT,
-                }
-              ]}
-              onPress={() => setIsExpanded(!isExpanded)}
-            >
-              <View style={styles.userCardContent}>
-                <View style={styles.userMainInfo}>
-                  <View style={[styles.userAvatar, { backgroundColor: selectedMember.role === 'parent' ? colors.PRIMARY.DEFAULT : colors.SUCCESS.DEFAULT }]}>
-                    <Text style={styles.userAvatarText}>
-                      {selectedMember.role === 'parent' ? 'M' : 'S'}
-                    </Text>
-                  </View>
-                  <View style={styles.userInfo}>
-                    <Text style={[styles.userName, { color: themeColors.text }]}>
-                      {selectedMember.name}
-                    </Text>
-                    <Text style={[styles.userSubtitle, { color: isDark ? '#888' : '#666' }]}>
-                      {selectedMember.age}세 • {selectedMember.role === 'parent' ? '부모 계정' : '자식 계정'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.expandIndicator}>
-                  <View style={[styles.expandButton, { backgroundColor: isDark ? '#333' : '#f5f5f5' }]}>
-                  <Feather 
-                    name="chevron-down" 
-                    size={18} 
-                    color={isDark ? '#ccc' : '#666'} 
-                      style={[styles.expandIcon, isExpanded && styles.expandIconRotated]}
-                  />
-                  </View>
-                </View>
-              </View>
-            </TouchableOpacity>
-
-            {/* 가족 구성원 목록 - 부모 계정만 */}
-            {isExpanded && (
-              <View style={[
-                styles.memberListContainer,
-                { 
-                  backgroundColor: isDark ? themeColors.card : 'white',
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: isDark ? '#333' : '#e0e0e0',
-                shadowColor: isDark ? '#000' : '#000',
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.1,
-                  shadowRadius: 8,
-                  elevation: 4,
-                  paddingVertical: 8,
-                }
-              ]}>
-                {familyMembers.map((member, index) => (
-                  <TouchableOpacity
-                    key={member.user_id}
-                    style={[
-                      styles.memberCard,
-                      { 
-                        backgroundColor: 'transparent',
-                        borderColor: selectedMember.user_id === member.user_id ? 
-                          colors.PRIMARY.DEFAULT : 'transparent',
-                        borderWidth: selectedMember.user_id === member.user_id ? 2 : 0,
-                        borderRadius: selectedMember.user_id === member.user_id ? 8 : 0,
-                        marginHorizontal: 8,
-                        marginVertical: 4,
-                      }
-                    ]}
-                    onPress={() => handleSelectMember(member)}
-                  >
-                    <View style={styles.memberCardContent}>
-                      <View style={styles.memberMainInfo}>
-                        <View style={[styles.memberAvatar, { 
-                      backgroundColor: member.role === 'parent' ? colors.PRIMARY.DEFAULT : colors.SUCCESS.DEFAULT
-                    }]}>
-                          <Text style={styles.memberAvatarText}>
-                        {member.role === 'parent' ? 'M' : 'S'}
-                      </Text>
-                    </View>
-                        <View style={styles.memberInfo}>
-                          <Text style={[styles.memberName, { color: themeColors.text }]}>
-                        {member.name}
-                      </Text>
-                          <Text style={[styles.memberSubtitle, { 
-                        color: isDark ? '#888' : '#666'
-                      }]}>
-                        {member.age}세 • {member.role === 'parent' ? '부모 계정' : '자식 계정'}
-                      </Text>
-                        </View>
-                    </View>
-                    {selectedMember.user_id === member.user_id && (
-                        <View style={styles.selectedIndicator}>
-                          <View style={[styles.checkmark, { backgroundColor: colors.PRIMARY.DEFAULT }]}>
-                        <Feather name="check" size={16} color={colors.WHITE} />
-                          </View>
-                      </View>
-                    )}
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </>
-        )}
-
-        {/* 자식 계정일 때는 고정된 헤더만 표시 */}
-        {userType === 'child' && (
-          <View style={[
-            styles.userSelectionCard, 
-            { 
-              backgroundColor: isDark ? themeColors.card : 'white',
-              borderColor: colors.SUCCESS.DEFAULT,
-            }
-          ]}>
-            <View style={styles.userCardContent}>
-              <View style={styles.userMainInfo}>
-                <View style={[styles.userAvatar, { backgroundColor: colors.SUCCESS.DEFAULT }]}>
-                  <Text style={styles.userAvatarText}>
-                    S
-                  </Text>
-                </View>
-                <View style={styles.userInfo}>
-                  <Text style={[styles.userName, { color: themeColors.text }]}>
-                    {selectedMember?.name || '내 약 목록'}
-                  </Text>
-                  <Text style={[styles.userSubtitle, { color: isDark ? '#888' : '#666' }]}>
-                    자식 계정 • 스케줄 편집만 가능
-                  </Text>
-                  {/* 🔥 자식 계정에서도 그룹명 표시 */}
-                  {selectedMember?.group_name && (
-                    <Text style={[styles.groupNameText, { color: colors.SUCCESS.DEFAULT }]}>
-                      🏠 {selectedMember.group_name}
-                    </Text>
-                  )}
-                </View>
-              </View>
-            </View>
-          </View>
-        )}
+        {/* 가족 구성원 선택 컴포넌트 */}
+        <MemberSelector
+          userType={userType}
+          selectedMember={selectedMember}
+          familyMembers={familyMembers}
+          isExpanded={isExpanded}
+          isDark={isDark}
+          themeColors={themeColors}
+          onToggleExpand={() => setIsExpanded(!isExpanded)}
+          onSelectMember={handleSelectMember}
+        />
 
         {/* 약 리스트 */}
         <View style={styles.medicineContainer}>
-          {/* 헤더 텍스트 섹션 */}
-          <View style={styles.medicineHeaderSection}>
-            <View style={styles.medicineHeaderContent}>
-              <View style={[styles.medicineIcon, { backgroundColor: colors.PRIMARY.DEFAULT + '20' }]}>
-                <Feather 
-                  name="heart" 
-                  size={20} 
-                  color={colors.PRIMARY.DEFAULT} 
-                />
-              </View>
-              <View style={styles.medicineHeaderText}>
-                <Text style={[styles.medicineListTitle, { color: themeColors.text }]}>
-                  보유중인 약
-                </Text>
-                <Text style={[styles.medicineListSubtitle, { color: isDark ? '#888' : '#666' }]}>
-                  등록된 의약품 목록
-                </Text>
-              </View>
-            </View>
-          </View>
-          
-          {/* 버튼 섹션 */}
-          <View style={styles.allButtonsContainer}>
-            {/* 약 검색 버튼 */}
-            <TouchableOpacity
-              style={[styles.dispenseButton, styles.searchButton]}
-              onPress={handleMedicineSearch}
-            >
-              <Feather 
-                name={userType === 'parent' ? 'search' : 'info'} 
-                size={12} 
-                color={colors.PRIMARY.DEFAULT} 
-              />
-              <Text style={[styles.dispenseButtonText, { color: colors.PRIMARY.DEFAULT }]}>
-                {userType === 'parent' ? '약 검색' : '약 정보'}
-              </Text>
-            </TouchableOpacity>
+          {/* 약물 목록 헤더 컴포넌트 */}
+          <MedicineHeader
+            userType={userType}
+            isDark={isDark}
+            themeColors={themeColors}
+            onSearchPress={handleMedicineSearch}
+            onSchedulePress={() => setTodayScheduleModalVisible(true)}
+          />
 
-            {/* 오늘의 스케줄 표시 */}
-            <TouchableOpacity
-              style={[styles.dispenseButton, styles.todayScheduleButton]}
-              onPress={() => setTodayScheduleModalVisible(true)}
-            >
-              <Feather name="calendar" size={12} color="#FFF" />
-              <Text style={[styles.dispenseButtonText, { color: '#FFF' }]}>
-                스케줄 확인
-              </Text>
-            </TouchableOpacity>
-
-          </View>
-
-          {loading ? (
-            <ActivityIndicator size="small" color={themeColors.text} />
-          ) : medicineList.length > 0 ? (
-            (() => {
-              // 맥스 슬롯 설정에 따라 동적으로 슬롯 배열 생성
-              const slotKeys = Array.from({ length: maxSlot }, (_, i) => i + 1);
-              
-              const renderedSlots = slotKeys.map((slot) => {
-                const medicines = groupedMedicines[slot];
-                
-                if (medicines.length === 0) return null;
-                
-                return (
-                  <View key={slot} style={{ marginBottom: 20 }}>
-                    <View style={styles.slotHeader}>
-                      <View style={[styles.slotBadge, { backgroundColor: colors.PRIMARY.DEFAULT }]}>
-                        <Feather name="package" size={16} color={colors.WHITE} />
-                        <Text style={styles.slotBadgeText}>
-                          {slot}번
-                    </Text>
-                      </View>
-                      <Text style={[styles.slotLabel, { color: isDark ? '#888' : '#666' }]}>
-                        디스펜서
-                      </Text>
-                    </View>
-                    {medicines.map((medicine, idx) =>
-                      <React.Fragment key={`${medicine.medi_id}-${medicine.slot}-${idx}`}>
-                        {renderMedicineItem(medicine, idx)}
-                      </React.Fragment>
-                    )}
-                  </View>
-                );
-              }).filter(Boolean);
-              
-              return renderedSlots.length > 0 ? renderedSlots : (
-                <View style={styles.emptyContainer}>
-                  <Text style={[styles.noMedicineText, { color: themeColors.text }]}>등록된 약이 없습니다.</Text>
-                  <Text style={[styles.noMedicineSubText, { color: themeColors.text }]}>상단의 "약 검색" 버튼을 눌러 약을 등록해주세요.</Text>
-                  </View>
-                );
-            })()
-          ) : (
-            <View style={[styles.emptyContainer, { backgroundColor: themeColors.background }]}>
-              <Text style={[styles.noMedicineText, { color: themeColors.text }]}>✨ 어서오세요! 복용중인 약이 없습니다.</Text>
-              <Text style={[styles.noMedicineSubText, { color: themeColors.text }]}>상단의 "약 검색" 버튼을 눌러 약을 등록해주세요.</Text>
-              <View style={[styles.emptyGuideContainer, { backgroundColor: themeColors.background }]}>
-                <Text style={[styles.emptyGuideText, { color: colors.PRIMARY.DEFAULT }]}>💊 약 등록 방법:</Text>
-                <Text style={[styles.emptyGuideStep, { color: themeColors.text }]}>1. 상단의 "약 검색" 버튼 클릭</Text>
-                <Text style={[styles.emptyGuideStep, { color: themeColors.text }]}>2. 약 이름이나 성분으로 검색</Text>
-                <Text style={[styles.emptyGuideStep, { color: themeColors.text }]}>3. 복용 스케줄 설정</Text>
-                <Text style={[styles.emptyGuideStep, { color: themeColors.text }]}>4. 디스펜서 슬롯 할당</Text>
-              </View>
-            </View>
-          )}
+          <MedicineList
+            medicines={medicineList}
+            loading={loading}
+            maxSlot={maxSlot}
+            selectedMember={selectedMember}
+            userType={userType}
+            familyMembers={familyMembers}
+            dailySchedules={dailySchedules}
+            doseCompletionStatus={doseCompletionStatus}
+            loadingDoseStatus={loadingDoseStatus}
+            themeColors={themeColors}
+            isDark={isDark}
+            onViewDetail={(med) => handleViewItemDetail('medicine', med)}
+            onNavigateToSchedule={handleNavigateToSchedule}
+            onDelete={handleDeleteMedicine}
+            onCompleteDose={handleCompleteDose}
+            renderRightActions={renderRightActions}
+            getOwnerInfo={getOwnerInfo}
+            getMedicineDisplayInfo={getMedicineDisplayInfo}
+          />
         </View>
         {/* 영양제 섹션 - 별도로 표시 */}
         {supplementList.length > 0 && (
           <View style={styles.supplementSection}>
             <Text style={[styles.supplementSectionTitle, { color: colors.SUCCESS.DEFAULT }]}>영양제</Text>
-            {supplementList.map((supplement, idx) =>
-              <React.Fragment key={`supplement-${supplement.id}-${idx}`}>
-                {renderSupplementItem(supplement, idx)}
-              </React.Fragment>
-            )}
+            {supplementList.map((supplement, idx) => {
+              // 🔥 로딩 상태 확인 (target_users 기반)
+              let actualTargetUserId = selectedMember?.user_id || '';
+              if (supplement.target_users && supplement.target_users.length > 0) {
+                actualTargetUserId = supplement.target_users[0];
+              }
+              const statusKey = `${supplement.id}_${actualTargetUserId}`;
+              const isLoadingDoseStatus = loadingDoseStatus.has(statusKey);
+              
+              return (
+                <SupplementItem
+                  key={`supplement-${supplement.id}-${idx}`}
+                  supplement={supplement}
+                  selectedMember={selectedMember}
+                  userType={userType}
+                  supplementSchedules={supplementSchedules}
+                  doseCompletionStatus={doseCompletionStatus}
+                  isLoadingDoseStatus={isLoadingDoseStatus}
+                  isDark={isDark}
+                  themeColors={themeColors}
+                  onViewDetail={(supp) => handleViewItemDetail('supplement', supp)}
+                  onDelete={handleDeleteSupplement}
+                  onScheduleEdit={(supplement) => {
+                    (navigation as any).navigate('SupplementScheduleEdit', {
+                      supplementId: supplement.id || supplement.name,
+                      memberId: selectedMember?.user_id || '',
+                      supplementName: supplement.name,
+                      slot: supplement.dispenserSlot,
+                    });
+                  }}
+                  renderRightActions={renderRightActions}
+                  getTodayScheduleForSupplement={getTodayScheduleForSupplement}
+                  getMedicineDisplayInfo={getMedicineDisplayInfo}
+                />
+              );
+            })}
           </View>
         )}
       </ScrollView>
@@ -3082,8 +2244,7 @@ function MainHomeScreen() {
         selectedMember={selectedMember}
         dailySchedules={dailySchedules}
         userType={userType}
-        familyMembers={familyMembers}
-      />
+        familyMembers={familyMembers} supplementList={[]}      />
 
       {/* 🔥 약물 연장 모달 */}
       <MedicineExtensionModal
@@ -3094,10 +2255,15 @@ function MainHomeScreen() {
         }}
         medicine={medicineToExtend}
         selectedMember={selectedMember}
-        onExtensionComplete={() => {
+        onExtensionComplete={async () => {
           setExtensionModalVisible(false);
           setMedicineToExtend(null);
-          loadMedicineList();
+          // 🔥 에러 처리 추가
+          try {
+            await loadMedicineList();
+          } catch (error) {
+            logger.error('약 목록 로드 실패', error);
+          }
         }}
       />
     </SafeAreaView>
@@ -3107,7 +2273,6 @@ function MainHomeScreen() {
 const styles = StyleSheet.create({
   safeAreaView: {
     flex: 1,
-    paddingHorizontal: 10,
   },
   loadingContainer: {
     flex: 1,
@@ -3189,7 +2354,7 @@ const styles = StyleSheet.create({
     marginLeft: 10,
   },
   medicineContainer: {
-    marginTop: Platform.OS === 'ios' ? 1 : -10,
+    marginTop: 24,
   },
   medicineBox: {
     borderColor: colors.PRIMARY.DEFAULT,

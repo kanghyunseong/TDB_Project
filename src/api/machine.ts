@@ -175,7 +175,9 @@ export const getUserMachineInfo = async (userId: string): Promise<ApiResponse<an
     if (error.response?.status === 404) {
       return {
         success: true,
-        data: null
+        data: null,
+        isEmpty: true, // 🔥 기기가 없음을 명시
+        message: '등록된 기기가 없습니다.'
       };
     }
     

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,6 @@ import {
   StyleSheet,
   Alert,
   Dimensions,
-  Animated,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { 
@@ -35,6 +34,8 @@ interface Props {
   onClose?: () => void;
   onConsultPharmacist?: () => void;
   onViewDetails?: (interaction: DrugInteraction) => void;
+  onDeleteAllInteractions?: () => Promise<void>;
+  isParent?: boolean; // 🔥 부모 계정 여부
 }
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -43,41 +44,12 @@ export const DrugInteractionAlert: React.FC<Props> = ({
   validationResult,
   onClose,
   onConsultPharmacist,
-  onViewDetails
+  onViewDetails,
+  onDeleteAllInteractions,
+  isParent = false
 }) => {
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
-  const slideAnim = useRef(new Animated.Value(Dimensions.get('window').height)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (isDetailModalVisible) {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: 0,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.timing(slideAnim, {
-          toValue: Dimensions.get('window').height,
-          duration: 350,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }
-  }, [isDetailModalVisible]);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [selectedInteraction, setSelectedInteraction] = useState<DrugInteraction | null>(null);
 
   // 🔥 위험도별 색상 및 아이콘
@@ -140,15 +112,37 @@ export const DrugInteractionAlert: React.FC<Props> = ({
     onViewDetails?.(interaction);
   };
 
-  const handleConsultPress = () => {
+  // 🔥 상호작용이 발생한 모든 약물 일괄 삭제
+  const handleDeleteAllPress = () => {
+    if (!isParent) {
+      Alert.alert(
+        '권한 없음',
+        '약물 삭제는 보호자 계정에서만 가능합니다.',
+        [{ text: '확인' }]
+      );
+      return;
+    }
+    
     Alert.alert(
-      '전문가 상담',
-      '약물 상호작용에 대해 약사 또는 의사와 상담하시겠습니까?',
+      '상호작용 약물 일괄 삭제',
+      `상호작용이 발생한 모든 약물(${validationResult.interactions.length}건)을 삭제하시겠습니까?`,
       [
         { text: '취소', style: 'cancel' },
         { 
-          text: '상담 예약', 
-          onPress: () => onConsultPharmacist?.() 
+          text: '삭제', 
+          style: 'destructive',
+          onPress: async () => {
+            if (!onDeleteAllInteractions) return;
+            
+            setIsDeleting(true);
+            try {
+              await onDeleteAllInteractions();
+            } catch (error) {
+              console.error('약물 일괄 삭제 실패:', error);
+            } finally {
+              setIsDeleting(false);
+            }
+          }
         }
       ]
     );
@@ -201,15 +195,39 @@ export const DrugInteractionAlert: React.FC<Props> = ({
                   </Text>
                 </View>
                 
-                {/* 🔥 소유자 정보 표시 */}
-                {(enhancedInteraction.drugAOwner || enhancedInteraction.drugBOwner) && (
+                {/* 🔥 소유자 정보 표시 - 모든 복용자 표시 */}
+                {(() => {
+                  const drugAOwners = enhancedInteraction.drugAOwners || (enhancedInteraction.drugAOwner ? [enhancedInteraction.drugAOwner] : []);
+                  const drugBOwners = enhancedInteraction.drugBOwners || (enhancedInteraction.drugBOwner ? [enhancedInteraction.drugBOwner] : []);
+                  
+                  if (drugAOwners.length === 0 && drugBOwners.length === 0) return null;
+                  
+                  // 🔥 모든 복용자 이름 수집
+                  const drugANames = drugAOwners.map((owner: any) => 
+                    `${owner.name}(${owner.role === 'parent' ? '메인' : '자녀'})`
+                  ).join(', ');
+                  
+                  const drugBNames = drugBOwners.map((owner: any) => 
+                    `${owner.name}(${owner.role === 'parent' ? '메인' : '자녀'})`
+                  ).join(', ');
+                  
+                  // 🔥 같은 사람들이 복용하는지 확인
+                  const drugAOwnerIds = new Set(drugAOwners.map((o: any) => o.ownerId));
+                  const drugBOwnerIds = new Set(drugBOwners.map((o: any) => o.ownerId));
+                  const isSameOwners = drugAOwnerIds.size === drugBOwnerIds.size && 
+                                      Array.from(drugAOwnerIds).every(id => drugBOwnerIds.has(id));
+                  
+                  return (
                   <View style={styles.ownerInfo}>
                     <Text style={styles.ownerInfoText}>
-                      {enhancedInteraction.drugAOwner?.name}({enhancedInteraction.drugAOwner?.role === 'parent' ? '메인' : '자식'}) ↔{' '}
-                      {enhancedInteraction.drugBOwner?.name}({enhancedInteraction.drugBOwner?.role === 'parent' ? '메인' : '자식'})
+                        {isSameOwners
+                          ? `${drugANames} - 본인 약물 간 상호작용`
+                          : `${drugANames} ↔ ${drugBNames}`
+                        }
                     </Text>
                   </View>
-                )}
+                  );
+                })()}
                 
                 <Text style={styles.interactionDescription} numberOfLines={2}>
                   {interaction.description}
@@ -241,13 +259,23 @@ export const DrugInteractionAlert: React.FC<Props> = ({
 
          {/* 🔥 액션 버튼들 */}
          <View style={styles.actionButtons}>
+           {isParent && (
            <TouchableOpacity 
-             style={[styles.actionButton, styles.consultButton]}
-             onPress={handleConsultPress}
+               style={[styles.actionButton, styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
+               onPress={handleDeleteAllPress}
+               disabled={!onDeleteAllInteractions || isDeleting}
            >
-             <Icon name="doctor" size={16} color="#fff" />
-             <Text style={styles.consultButtonText}>전문가 상담</Text>
+               <Icon name="delete" size={16} color="#fff" />
+               <Text 
+                 style={styles.deleteButtonText}
+                 numberOfLines={1}
+                 adjustsFontSizeToFit
+                 minimumFontScale={0.8}
+               >
+                 {isDeleting ? '삭제 중...' : '상호작용 약물 일괄 삭제'}
+               </Text>
            </TouchableOpacity>
+           )}
            
            <TouchableOpacity 
              style={[styles.actionButton, styles.detailButton]}
@@ -266,8 +294,8 @@ export const DrugInteractionAlert: React.FC<Props> = ({
          presentationStyle="pageSheet"
          onRequestClose={() => setIsDetailModalVisible(false)}
        >
-         <Animated.View style={[styles.modalContainer, { opacity: fadeAnim }]}>
-           <Animated.View style={[styles.modalInnerContainer, { transform: [{ translateY: slideAnim }] }]}>
+         <View style={styles.modalContainer}>
+           <View style={styles.modalInnerContainer}>
            <View style={styles.modalHeader}>
              <Text style={styles.modalTitle}>약물 상호작용 상세 정보</Text>
              <TouchableOpacity
@@ -283,13 +311,17 @@ export const DrugInteractionAlert: React.FC<Props> = ({
             contentContainerStyle={styles.modalContentContainer}
             showsVerticalScrollIndicator={true}
             bounces={true}
+              nestedScrollEnabled={true}
           >
             {/* 전체 위험도 */}
             <View style={[styles.riskOverview, { backgroundColor: overallStyle.backgroundColor }]}>
               <Icon name={overallStyle.icon} size={32} color={overallStyle.iconColor} />
               <View style={styles.riskOverviewText}>  
-                <Text style={[styles.riskLevel, { color: overallStyle.  iconColor }]}>
-                  전체 위험도: {overallStyle.label}
+                <Text style={[styles.riskLevel, { color: overallStyle.iconColor }]}>
+                  위험도: {overallStyle.label === '위험' ? '위험수준' : 
+                           overallStyle.label === '주의' ? '주의수준' : 
+                           overallStyle.label === '확인' ? '확인수준' : 
+                           overallStyle.label === '안전' ? '안전수준' : overallStyle.label}
                 </Text>
                 <Text style={styles.riskSummary}>
                   총 {validationResult.interactions.length}건의 상호작용이 발견되었습니다.
@@ -318,15 +350,39 @@ export const DrugInteractionAlert: React.FC<Props> = ({
                     {interaction.drugA} ↔ {interaction.drugB}
                   </Text>
                   
-                  {/* 🔥 상세 모달에서도 소유자 정보 표시 */}
-                  {(enhancedInteraction.drugAOwner || enhancedInteraction.drugBOwner) && (
+                  {/* 🔥 상세 모달에서도 소유자 정보 표시 - 모든 복용자 표시 */}
+                  {(() => {
+                    const drugAOwners = enhancedInteraction.drugAOwners || (enhancedInteraction.drugAOwner ? [enhancedInteraction.drugAOwner] : []);
+                    const drugBOwners = enhancedInteraction.drugBOwners || (enhancedInteraction.drugBOwner ? [enhancedInteraction.drugBOwner] : []);
+                    
+                    if (drugAOwners.length === 0 && drugBOwners.length === 0) return null;
+                    
+                    // 🔥 모든 복용자 이름 수집
+                    const drugANames = drugAOwners.map((owner: any) => 
+                      `${owner.name}(${owner.role === 'parent' ? '보호자' : '자녀'})`
+                    ).join(', ');
+                    
+                    const drugBNames = drugBOwners.map((owner: any) => 
+                      `${owner.name}(${owner.role === 'parent' ? '보호자' : '자녀'})`
+                    ).join(', ');
+                    
+                    // 🔥 같은 사람들이 복용하는지 확인
+                    const drugAOwnerIds = new Set(drugAOwners.map((o: any) => o.ownerId));
+                    const drugBOwnerIds = new Set(drugBOwners.map((o: any) => o.ownerId));
+                    const isSameOwners = drugAOwnerIds.size === drugBOwnerIds.size && 
+                                        Array.from(drugAOwnerIds).every(id => drugBOwnerIds.has(id));
+                    
+                    return (
                     <View style={styles.ownerInfo}>
                       <Text style={styles.ownerInfoText}>
-                        복용자: {enhancedInteraction.drugAOwner?.name}({enhancedInteraction.drugAOwner?.role === 'parent' ? '보호자' : '자식'}) ↔{' '}
-                        {enhancedInteraction.drugBOwner?.name}({enhancedInteraction.drugBOwner?.role === 'parent' ? '보호자' : '자식'})
+                          복용자: {isSameOwners
+                            ? `${drugANames} - 본인 약물 간 상호작용`
+                            : `${drugANames} ↔ ${drugBNames}`
+                          }
                       </Text>
                     </View>
-                  )}
+                    );
+                  })()}
                   
                   <Text style={styles.detailDescription}>
                     {interaction.description}
@@ -340,24 +396,33 @@ export const DrugInteractionAlert: React.FC<Props> = ({
                    </View>
                   
                   <Text style={styles.sourceInfo}>
-                    출처: {interaction.sourceField} | 신뢰도: {Math.round(interaction.confidence * 100)}%
+                    출처: {interaction.sourceField === 'known_interactions' 
+                      ? '알려진 상호작용 데이터베이스' 
+                      : interaction.sourceField === 'RAWMTRL_NM'
+                      ? '원료 성분 분석'
+                      : interaction.sourceField} | 신뢰도: {Math.round(interaction.confidence * 100)}%
                   </Text>
                 </View>
               );
             })}
 
             {/* 종합 권장사항 */}
+            {validationResult.recommendations.length > 0 && (
             <View style={styles.finalRecommendations}>
               <Text style={styles.finalRecommendationsTitle}>💡 종합 권장사항</Text>
+                <Text style={styles.finalRecommendationsSubtitle}>
+                  발견된 모든 상호작용을 종합하여 제공하는 권장사항입니다.
+                </Text>
               {validationResult.recommendations.map((rec, index) => (
                 <Text key={index} style={styles.finalRecommendationItem}>
                   • {rec}
                 </Text>
               ))}
             </View>
+            )}
           </ScrollView>
-            </Animated.View>
-        </Animated.View>
+          </View>
+        </View>
       </Modal>
     </>
   );
@@ -492,16 +557,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
+    paddingHorizontal: 8,
     borderRadius: 8,
     gap: 6,
+    minWidth: 0, // 🔥 flex 아이템이 부모를 넘지 않도록
   },
-  consultButton: {
+  deleteButton: {
     backgroundColor: colors.red500,
   },
-  consultButtonText: {
+  deleteButtonDisabled: {
+    opacity: 0.5,
+  },
+  deleteButtonText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
+    flexShrink: 1, // 🔥 텍스트가 넘치면 줄어들도록
   },
   detailButton: {
     backgroundColor: '#fff',
@@ -545,7 +616,7 @@ const styles = StyleSheet.create({
   },
   modalContentContainer: {
     padding: 20,
-    paddingBottom: 80, // 하단 여백 증가로 종합 권장사항까지 모두 볼 수 있게
+    paddingBottom: 100, // 하단 여백 증가로 종합 권장사항까지 모두 볼 수 있게
   },
 
   // 🔥 위험도 개요
@@ -636,13 +707,138 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.gray800,
+    marginBottom: 4,
+  },
+  finalRecommendationsSubtitle: {
+    fontSize: 12,
+    color: colors.gray500,
     marginBottom: 12,
+    fontStyle: 'italic',
   },
   finalRecommendationItem: {
     fontSize: 14,
     color: colors.gray700,
     lineHeight: 20,
     marginBottom: 8,
+  },
+
+  // 🔥 약물 삭제 모달 스타일
+  deleteModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteModalContainer: {
+    width: '90%',
+    maxHeight: '80%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  deleteModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray200,
+  },
+  deleteModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.gray800,
+  },
+  deleteModalCloseButton: {
+    padding: 4,
+  },
+  deleteModalContent: {
+    maxHeight: 400,
+    padding: 20,
+  },
+  deleteModalDescription: {
+    fontSize: 14,
+    color: colors.gray600,
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  deleteInteractionGroup: {
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray200,
+  },
+  deleteInteractionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.gray800,
+    marginBottom: 12,
+  },
+  deleteMedicineButtonContainer: {
+    marginBottom: 12,
+  },
+  deleteMedicineButtons: {
+    gap: 10,
+  },
+  deleteInteractionsList: {
+    marginTop: 8,
+    paddingLeft: 8,
+  },
+  deleteInteractionsLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.gray600,
+    marginBottom: 4,
+  },
+  deleteInteractionItem: {
+    fontSize: 12,
+    color: colors.gray600,
+    lineHeight: 18,
+    marginBottom: 2,
+  },
+  deleteMedicineButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.red500,
+    padding: 14,
+    borderRadius: 8,
+    gap: 10,
+  },
+  deleteMedicineButtonDisabled: {
+    opacity: 0.5,
+  },
+  deleteMedicineButtonTextContainer: {
+    flex: 1,
+  },
+  deleteMedicineButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  deleteMedicineButtonSubtext: {
+    color: '#fff',
+    fontSize: 12,
+    opacity: 0.8,
+    marginTop: 2,
+  },
+  deleteModalFooter: {
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray200,
+  },
+  deleteModalCancelButton: {
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: colors.gray200,
+    alignItems: 'center',
+  },
+  deleteModalCancelButtonDisabled: {
+    opacity: 0.5,
+  },
+  deleteModalCancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.gray700,
   },
 });
 

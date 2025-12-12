@@ -2,6 +2,7 @@ import { apiClient } from './client';
 import { API_ENDPOINTS } from '../constants/api';
 import { getCurrentUser } from './userStorage';
 import { getFamilyMembers } from './family';
+import { logger } from '../utils/logger';
 
 export interface FamilyDashboardData {
   overallProgress: number;
@@ -111,6 +112,32 @@ export const getFamilyDashboardStats = async (): Promise<{
       
       // 4. 구성원별 세밀한 진행률 수집 및 분석
       console.log('🔬 [Step 5] 구성원별 세밀한 데이터 분석');
+      
+      // 🔥 familyMembers가 배열인지 확인
+      if (!Array.isArray(familyMembers) || familyMembers.length === 0) {
+        console.warn('⚠️ [getFamilyDashboardStats] familyMembers가 배열이 아니거나 비어있음');
+        // 빈 데이터로 기본 구조 반환
+        return {
+          success: true,
+          data: {
+            overallProgress: serverData?.completion_rate || 0,
+            totalMembers: serverData?.member_count || 0,
+            completedMembers: 0,
+            totalDoses: serverData?.total_scheduled || 0,
+            completedDoses: serverData?.total_completed || 0,
+            pendingDoses: (serverData?.total_scheduled || 0) - (serverData?.total_completed || 0),
+            missedDoses: 0,
+            partialDoses: 0,
+            machineStatus: {
+              connected: 0,
+              total: 0,
+              lowBattery: 0,
+            },
+            todaySchedules: [],
+            memberProgress: [],
+          }
+        };
+      }
       
              const memberDetailedProgress = await Promise.all(
          familyMembers.map(async (member) => {
@@ -426,6 +453,70 @@ export const getMemberTodayStats = async (userId: string): Promise<{
     }
   } catch (error) {
     console.error('❌ [getMemberTodayStats] API 호출 에러:', error);
+    return {
+      success: false,
+      error: { 
+        message: error instanceof Error ? error.message : '네트워크 오류가 발생했습니다.' 
+      }
+    };
+  }
+};
+
+/**
+ * 🔥 배치 API: 가족 전체의 오늘 스케줄 한 번에 조회
+ */
+export const getFamilyTodaySchedules = async (group_id: string): Promise<{
+  success: boolean;
+  data?: {
+    members: Array<{
+      user_id: string;
+      name: string;
+      medicines: Array<{
+        medi_id: string;
+        name: string;
+        time_of_day: 'morning' | 'afternoon' | 'evening';
+        scheduled_dose: number;
+        actual_dose?: number;
+        status: 'completed' | 'missed' | 'partial' | null;
+        completed_at?: string;
+        schedule_created_at?: string;
+        notes?: string; // 🔥 배출 기록 확인용
+      }>;
+      supplements: Array<{
+        medi_id: string;
+        name: string;
+        time_of_day: 'morning' | 'afternoon' | 'evening';
+        scheduled_dose: number;
+        actual_dose?: number;
+        status: 'completed' | 'missed' | 'partial' | null;
+        completed_at?: string;
+        schedule_created_at?: string;
+        notes?: string; // 🔥 배출 기록 확인용
+      }>;
+    }>;
+  };
+  error?: { message: string };
+}> => {
+  try {
+    logger.debug('🔍 [getFamilyTodaySchedules] 배치 API 호출:', group_id);
+    
+    const response = await apiClient.get(
+      `/api/dose-history/family-today-schedules/${group_id}`
+    );
+    
+    if (response.data.success) {
+      return {
+        success: true,
+        data: response.data.data
+      };
+    } else {
+      return {
+        success: false,
+        error: response.data.error || { message: '가족 오늘 스케줄 조회에 실패했습니다.' }
+      };
+    }
+  } catch (error) {
+    logger.error('❌ [getFamilyTodaySchedules] API 호출 에러:', error);
     return {
       success: false,
       error: { 

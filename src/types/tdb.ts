@@ -66,7 +66,7 @@ export interface Medicine {
   memberName?: string;
   memberType?: UserRole;
   user_id?: string; // 편의를 위한 필드
-  permission?: 'own' | 'others'; // 권한 정보
+  permission?: 'own' | 'common' | 'manage' | 'others'; // 권한 정보
 }
 
 // Machine 엔터티와 동기화
@@ -153,6 +153,9 @@ export interface MedicineSchedule {
   morningDose?: number;
   afternoonDose?: number;
   eveningDose?: number;
+  
+  // 🔥 메타데이터
+  isEmpty?: boolean; // 404로 인한 빈 스케줄임을 명시
 }
 
 // 약물 검색 결과 (외부 API)
@@ -208,6 +211,7 @@ export interface NutritionalSupplement {
   startDate: string;
   endDate: string;
   dispenserSlot?: string | number;
+  slot?: number; // 약물과 동일한 필드명 추가
   memberId: string;
   memberName?: string;
   memberType?: UserRole;
@@ -219,6 +223,8 @@ export interface NutritionalSupplement {
   intakeMethod?: string;
   target_users?: string[] | null;
   targetUsers?: string[] | null; // 하위 호환성을 위해 추가
+  start_date?: string; // 약물과 동일한 필드명 추가 (하위 호환성)
+  end_date?: string; // 약물과 동일한 필드명 추가 (하위 호환성)
 }
 
 export interface SupplementSchedule {
@@ -237,15 +243,27 @@ export interface SupplementSchedule {
 }
 
 // API 응답 타입
+export interface ApiError {
+  message: string;
+  statusCode?: number;
+  code?: string; // 에러 코드 (예: 'AGE_RESTRICTION')
+  warnings?: string[]; // 경고 메시지 배열
+}
+
+export interface ApiError {
+  message: string;
+  statusCode?: number;
+  code?: string; // 에러 코드 (예: 'AGE_RESTRICTION')
+  warnings?: string[]; // 경고 메시지 배열
+}
+
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
-  error?: {
-    message: string;
-    statusCode?: number;
-  };
+  error?: ApiError;
   message?: string;
   isNotFound?: boolean; // 호환성을 위해 추가
+  isEmpty?: boolean; // 🔥 404로 인한 빈 결과임을 명시
 }
 
 // QR 코드 관련 타입 (machine_id로 통일)

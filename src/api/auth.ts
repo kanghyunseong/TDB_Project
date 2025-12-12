@@ -21,7 +21,7 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
 
     // 🔥 서버의 SignupDto에 맞게 필드명 변경
     const requestBody = {
-      id: signupData.user_id,              // user_id → id
+      id: signupData.user_id,              // user_id → id (서버 DTO 형식)
       password: signupData.password,
       name: signupData.name,
       birthDate: signupData.birthDate,
@@ -55,14 +55,18 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
       };
     }
   } catch (error: any) {
-    console.error('❌ 회원가입 API 에러:', {
+    console.error('❌ 회원가입 API 에러 상세:', {
       message: error.message,
-      response: error.response?.data,
-      status: error.response?.status
+      responseData: error.response?.data,
+      status: error.response?.status,
+      statusCode: error.response?.data?.statusCode,
+      errorMessage: error.response?.data?.message,
+      headers: error.response?.headers
     });
 
     // 409 Conflict 에러 처리 (중복 아이디)
     if (error.response?.status === 409) {
+      console.log('🔴 409 에러 감지 - 중복 아이디');
       return {
         success: false,
         error: {
@@ -73,6 +77,7 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
 
     // 400 Bad Request 에러 처리
     if (error.response?.status === 400) {
+      console.log('🔴 400 에러 감지:', error.response?.data?.message);
       return {
         success: false,
         error: {
@@ -83,6 +88,7 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
 
     // 서버에서 반환한 에러 메시지가 있는 경우
     if (error.response?.data?.message) {
+      console.log('🔴 서버 에러 메시지:', error.response.data.message);
       return {
         success: false,
         error: {
@@ -93,6 +99,7 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
 
     // 네트워크 에러 처리
     if (error.code === 'NETWORK_ERROR' || error.message === 'Network Error') {
+      console.log('🔴 네트워크 에러');
       return {
         success: false,
         error: {
@@ -101,6 +108,7 @@ export const signup = async (signupData: SignupRequest): Promise<ApiResponse<Aut
       };
     }
 
+    console.log('🔴 기타 에러:', error.message);
     return {
       success: false,
       error: {
@@ -121,11 +129,11 @@ export const login = async (user_id: string, password: string): Promise<ApiRespo
     console.log('📥 로그인 응답 데이터:', response.data);
 
     if (response.data.success && response.data.data) {
-      // 🔥 서버 응답 형식에 맞게 수정
+      // 🔥 서버 응답 형식에 맞게 수정 (user_id로 통일)
       const {
         accessToken,
         refreshToken,
-        id,
+        user_id,  // 🔥 서버에서 user_id로 통일됨
         name,
         role,
         groupId,
@@ -142,7 +150,7 @@ export const login = async (user_id: string, password: string): Promise<ApiRespo
 
       // 사용자 정보 생성
       const userData = {
-        user_id: id,
+        user_id,  // 🔥 일관되게 user_id 사용
         name,
         role,
         group_id: groupId,
@@ -160,7 +168,7 @@ export const login = async (user_id: string, password: string): Promise<ApiRespo
         data: {
           accessToken,
           refreshToken,
-          user_id: id,
+          user_id,  // 🔥 일관되게 user_id 사용
           name,
           role,
           group_id: groupId,

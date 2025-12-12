@@ -11,7 +11,7 @@ const DOSE_TIME_SETTINGS_KEY = '@dose_time_settings';
 // 기본 설정값
 const DEFAULT_SETTINGS: DoseTimeSettings = {
   morning: '08:00',
-  afternoon: '13:00',
+  afternoon: '12:00',
   evening: '19:00'
 };
 

@@ -5,6 +5,8 @@ import Toast from 'react-native-toast-message';
 import { FamilyMember as TDBFamilyMember, Medicine, MedicineSchedule, NutritionalSupplement, SupplementSchedule, DayOfWeek, TimeOfDay, Schedule, NewMedicine } from '../types/tdb';
 import axios from 'axios';
 import { User, ApiResponse } from '../types';
+import { isAxiosError } from '../utils/typeGuards';
+import { parseError, showErrorToast, logError } from '../utils/errorHandler';
 import { getToken } from './auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { USER_KEY } from '../utils/storage';
@@ -12,7 +14,6 @@ import { DISPENSER_CONFIG } from '../constants/dispenser';
 
 export type FamilyMember = TDBFamilyMember;
 
-// 필요하다면 확장 타입만 별도 선언
 export type UIMedicine = Medicine & {
   memberName: string;
   memberType: 'parent' | 'child';
@@ -25,20 +26,24 @@ export type UISupplement = NutritionalSupplement & {
   schedule: string;
 };
 
-// API 에러 처리 함수
+// API 에러 처리 함수 (통일된 에러 처리 사용)
 const handleApiError = <T>(error: unknown, defaultMessage: string): T | null => {
-  if (error instanceof Error) {
-    const errorMessage = error.message;
-    if (errorMessage.includes('404')) {
-      // 404 에러는 데이터가 없는 정상적인 상황이므로 조용히 처리
-      console.log('데이터가 없습니다 (404):', defaultMessage);
-      return null;
-    } else {
-      Toast.show({ type: 'error', text1: errorMessage });
+  const errorInfo = parseError(error);
+  
+  // 404 에러는 데이터가 없는 정상적인 상황이므로 조용히 처리
+  if (errorInfo.isNotFound) {
+    if (__DEV__) {
+      console.log(`[handleApiError] 데이터 없음 (404): ${defaultMessage}`);
     }
-  } else {
-    Toast.show({ type: 'error', text1: defaultMessage });
+    return null;
   }
+  
+  // 에러 로그 기록
+  logError('handleApiError', error);
+  
+  // 사용자에게 에러 표시
+  showErrorToast(error, defaultMessage);
+  
   return null;
 };
 
@@ -224,7 +229,9 @@ export const getMedicineList = async (userId: string): Promise<ApiResponse<Medic
     if (error.response?.status === 404) {
       return {
         success: true,
-        data: [] // 404는 빈 배열 반환
+        data: [], // 404는 빈 배열 반환
+        isEmpty: true, // 🔥 빈 결과임을 명시
+        message: '등록된 약이 없습니다.'
       };
     }
 
@@ -244,24 +251,15 @@ export const saveMedicine = async (
   medicineId?: string
 ): Promise<ApiResponse<Medicine>> => {
   try {
-    console.log('=== 약 정보 저장 시작 ===');
-    console.log('memberId:', memberId);
-    console.log('medicineData 원본:', JSON.stringify(medicineData, null, 2));
-    console.log('medicineId:', medicineId);
-    console.log('medicineData.slot 타입:', typeof medicineData.slot);
-    console.log('medicineData.slot 값:', medicineData.slot);
+    if (__DEV__) {
+      console.log('[saveMedicine] 시작:', { memberId, medicineId });
+    }
     
     // 사용자 정보 조회하여 machine_id 확인
     const user = await getCurrentUser();
     if (!user?.user_id) {
       throw new Error('사용자 정보가 없습니다.');
     }
-    
-    // 테스트 환경을 위해 machine_id 체크를 주석 처리
-    // if (!user.machine_id) {
-    //   throw new Error('디스펜서가 등록되어 있지 않습니다. 디스펜서를 먼저 등록해주세요.');
-    // }
-    console.log('사용자 정보 확인 완료:', user.user_id);
 
     // 기존 약 목록 조회하여 사용 중인 slot 확인
     const existingMedicinesResponse = await getMedicineList(memberId);
@@ -275,7 +273,6 @@ export const saveMedicine = async (
                            userSelectedSlot <= DISPENSER_CONFIG.MAX_SLOTS;
     
     if (!isValidUserSlot) {
-      console.log('슬롯이 지정되지 않음 또는 유효하지 않음, 자동 할당 시작:', userSelectedSlot);
       // 사용 중인 slot 번호 목록
       const usedSlots = existingMedicines
         .filter(med => med.medi_id !== medicineData.medi_id) // 현재 수정 중인 약 제외
@@ -294,7 +291,9 @@ export const saveMedicine = async (
 
       // slot 자동 할당
       medicineData.slot = availableSlot;
-      console.log('자동 할당된 슬롯:', availableSlot);
+      if (__DEV__) {
+        console.log('[saveMedicine] 자동 할당된 슬롯:', availableSlot);
+      }
     } else {
       // 사용자가 선택한 슬롯이 이미 사용 중인지 확인
       const usedSlots = existingMedicines
@@ -305,18 +304,15 @@ export const saveMedicine = async (
       if (usedSlots.includes(userSelectedSlot)) {
         throw new Error(`${userSelectedSlot}번 슬롯은 이미 사용 중입니다. 다른 슬롯을 선택해주세요.`);
       }
-      
-      console.log('사용자가 지정한 슬롯 사용:', userSelectedSlot);
     }
 
     // medicineId가 "new"이거나 없으면 POST (새로 추가), 실제 ID가 있으면 PUT (수정)
     const isNewMedicine = !medicineId || medicineId === 'new';
-    const endpoint = isNewMedicine
+    const endpoint: string = isNewMedicine
       ? API_ENDPOINTS.MEDICINE.ADD // '/medicine' (POST)
       : API_ENDPOINTS.MEDICINE.UPDATE(medicineData.medi_id); // '/medicine/{medi_id}' (PUT)
     
-    const method = isNewMedicine ? 'post' : 'put';
-    console.log('약 정보 저장 요청:', { endpoint, method, data: medicineData, isNewMedicine, medicineId });
+    const method: 'post' | 'put' = isNewMedicine ? 'post' : 'put';
     
     // 서버에서 기대하는 데이터 형식으로 변환
     const requestData = {
@@ -330,19 +326,48 @@ export const saveMedicine = async (
       target_users: medicineData.target_users, // 🔥 누락된 target_users 필드 추가
     };
     
+    if (__DEV__) {
+      console.log('🔍 [saveMedicine] API 요청:', {
+        method,
+        endpoint,
+        requestData
+      });
+    }
+    
     const response = await apiClient[method]<ApiResponse<Medicine>>(endpoint, requestData);
-    console.log('약 정보 저장 응답:', response.data);
+    
+    if (__DEV__) {
+      console.log('✅ [saveMedicine] API 응답:', response.data);
+    }
     
     return {
       success: true,
       data: response.data.data
     };
   } catch (error: any) {
-    console.error('약 정보 저장 에러:', error.response?.data || error.message);
+    console.error('❌ [saveMedicine] 약 정보 저장 에러:', error);
+    
+    // 🔥 네트워크 오류 상세 로깅
+    if (error.code === 'NETWORK_ERROR' || error.message === 'Network Error' || !error.response) {
+      const isNewMedicine = !medicineId || medicineId === 'new';
+      const endpoint = isNewMedicine
+        ? API_ENDPOINTS.MEDICINE.ADD
+        : API_ENDPOINTS.MEDICINE.UPDATE(medicineData?.medi_id || '');
+      const method = isNewMedicine ? 'post' : 'put';
+      
+      console.error('🚨 [saveMedicine] 네트워크 연결 오류:', {
+        endpoint,
+        method,
+        message: error.message,
+        code: error.code,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     return {
       success: false,
       error: {
-        message: error.response?.data?.message || error.message || '약 정보 저장에 실패했습니다.'
+        message: error?.response?.data?.message || error?.message || '네트워크 오류가 발생했습니다. 서버 연결을 확인해주세요.'
       }
     };
   }
@@ -440,6 +465,18 @@ export const getMedicineSchedule = async (
   user_id: string
 ): Promise<MedicineSchedule | null> => {
   try {
+    // 🔥 로그아웃 후에는 사용자 정보가 없을 수 있으므로 체크
+    const { getCurrentUser } = await import('./userStorage');
+    const currentUser = await getCurrentUser();
+    
+    // 🔥 사용자 정보가 없으면 null 반환 (로그아웃 상태)
+    if (!currentUser) {
+      if (__DEV__) {
+        console.log('[getMedicineSchedule] 사용자 정보 없음 (로그아웃 상태)');
+      }
+      return null;
+    }
+    
     console.log(`🔍 getMedicineSchedule 시작: medi_id=${medi_id}, user_id=${user_id}`);
     
     const response = await apiClient.get(API_ENDPOINTS.MEDICINE.SCHEDULE(medi_id), {
@@ -451,7 +488,9 @@ export const getMedicineSchedule = async (
     // 스케줄 데이터 변환
     const responseData = response.data?.data;
     if (!responseData) {
-      console.log('📝 스케줄 데이터가 없어서 기본값 반환');
+      if (__DEV__) {
+        console.log('[getMedicineSchedule] 스케줄 데이터 없음');
+      }
       return {
         medi_id,
         user_id,
@@ -492,55 +531,32 @@ export const getMedicineSchedule = async (
     
     // 🔥 하위 호환성을 위한 doseCount (가장 큰 복용량 사용)
     const doseCount = Math.max(morningDose, afternoonDose, eveningDose);
-    
-    console.log(`🔍 시간대별 복용량 추출:`, {
-      morning: morningDose,
-      afternoon: afternoonDose,
-      evening: eveningDose,
-      doseCount,
-      totalQuantity,
-      slot
-    });
 
     // 객체 형태의 스케줄 데이터를 처리
     const schedule = responseData.schedule || {};
-    console.log(`🔍 스케줄 객체:`, schedule);
+    
+    // 🔥 schedules 배열도 함께 반환 (각 요일×시간대별 개별 복용량 정보)
+    const schedules = responseData.schedules || [];
     
     const result = {
       medi_id,
       user_id,
       schedule,
+      schedules, // 🔥 개별 스케줄 배열 추가
       totalQuantity,
       doseCount: doseCount.toString(),
-      // 🔥 시간대별 복용량 추가
       morningDose,
       afternoonDose,
       eveningDose,
       slot
     };
     
-    console.log('✅ 최종 변환된 스케줄:', result);
-    
     return result;
   } catch (error: unknown) {
-    // 🔥 타입 가드를 사용한 안전한 에러 처리
-    const isAxiosError = (err: unknown): err is { 
-      response?: { 
-        status?: number; 
-        data?: any; 
-        statusText?: string; 
-      }; 
-      config?: { 
-        url?: string; 
-        method?: string; 
-      } 
-    } => {
-      return typeof err === 'object' && err !== null && 'response' in err;
-    };
-    
     const getErrorMessage = (err: unknown): string => {
       if (isAxiosError(err)) {
-        return err.response?.data?.message || `HTTP ${err.response?.status}`;
+        const data = err.response?.data as { message?: string } | undefined;
+        return data?.message || `HTTP ${err.response?.status}`;
       }
       if (err instanceof Error) {
         return err.message;
@@ -548,11 +564,32 @@ export const getMedicineSchedule = async (
       return '알 수 없는 오류';
     };
     
-    console.error('❌ getMedicineSchedule 에러:', error);
+    // 🔥 로그아웃 중이거나 인증 에러인 경우 조용히 처리
+    if (isAxiosError(error) && error.response?.status === 401) {
+      const errorMessage = getErrorMessage(error);
+      if (__DEV__) {
+        console.log('🔒 [getMedicineSchedule] 인증 만료 - 조용히 처리:', errorMessage);
+      }
+      // 🔥 null 반환하여 조용히 처리 (에러 throw 대신)
+      return null;
+    }
     
-    // 404 에러는 스케줄이 없는 정상적인 상황으로 처리
+    if (error instanceof Error && error.message.includes('인증이 만료되었습니다')) {
+      if (__DEV__) {
+        console.log('🔒 [getMedicineSchedule] 인증 만료 (일반 Error) - 조용히 처리');
+      }
+      // 🔥 null 반환하여 조용히 처리 (에러 throw 대신)
+      return null;
+    }
+    
+    if (__DEV__) {
+      console.error('❌ getMedicineSchedule 에러:', error);
+    }
+    
     if (isAxiosError(error) && error.response?.status === 404) {
-      console.log('📝 스케줄이 없는 약입니다 (404):', medi_id);
+      if (__DEV__) {
+        console.log('[getMedicineSchedule] 스케줄 없음 (404):', medi_id);
+      }
       return {
         medi_id,
         user_id,
@@ -567,11 +604,11 @@ export const getMedicineSchedule = async (
         },
         totalQuantity: '',
         doseCount: '',
-        slot: 1
+        slot: 1,
+        isEmpty: true
       };
     }
     
-    // 다른 에러들은 로그만 출력하고 null 반환
     if (isAxiosError(error)) {
       console.error('서버 응답 에러:', {
         status: error.response?.status,
@@ -584,7 +621,6 @@ export const getMedicineSchedule = async (
       console.error('기타 에러:', getErrorMessage(error));
     }
     
-    // 🔥 중요: 404가 아닌 에러의 경우에도 null 대신 기본값 반환하여 UI 안정성 확보
     console.log('❌ 에러로 인해 기본 스케줄 반환');
     return {
       medi_id,
@@ -697,15 +733,16 @@ export const deleteMedicine = async (memberId: string, medicineId: string): Prom
   } catch (error: any) {
     console.error('약 삭제 실패:', error);
     
-    // 🔥 404 에러는 이미 삭제된 것으로 간주하고 성공 처리
+    // 🔥 404 에러는 정보를 보존하면서 처리
     if (error?.response?.status === 404) {
-      console.log(`✅ 약이 이미 삭제되었거나 존재하지 않습니다: ${medicineId}`);
+      console.log(`⚠️ 약이 이미 삭제되었거나 존재하지 않습니다: ${medicineId}`);
       Toast.show({
         type: 'info',
-        text1: '약 삭제 완료',
+        text1: '약 삭제',
         text2: '약이 이미 삭제되었습니다.',
       });
-      return true;
+      // 🔥 에러 정보를 유지하면서 성공 처리
+      return true; // UI에서는 성공으로 처리하지만 로그는 남김
     }
     
     // 🔥 500 에러에 대한 구체적인 처리
@@ -839,11 +876,18 @@ export const saveSupplementSchedule = async (
   doseCount?: string
 ): Promise<SupplementSchedule | null> => {
   try {
-    const response = await apiClient.post(`${API_ENDPOINTS.SUPPLEMENT.SCHEDULE}/${supplementId}`, {
+    // 현재 로그인된 사용자 정보 가져오기
+    const userJson = await AsyncStorage.getItem('@user');
+    const currentUser = userJson ? JSON.parse(userJson) : null;
+    const requestUserId = currentUser ? currentUser.user_id : null;
+
+    // 🔥 수정: /api/schedule/supplement/{supplementId} 경로 사용
+    const response = await apiClient.post(`${API_ENDPOINTS.SUPPLEMENT.SAVE_SCHEDULE}/${supplementId}`, {
       memberId,
       schedule,
       ...(totalQuantity !== undefined ? { totalQuantity } : {}),
       ...(doseCount !== undefined ? { doseCount } : {}),
+      requestUserId, // 🔥 요청자 정보 추가
     });
     console.log('saveSupplementSchedule response:', response.data);
     return response.data.data;
@@ -860,7 +904,7 @@ export const getSupplementSchedule = async (
   memberId: string
 ): Promise<SupplementSchedule | null> => {
   try {
-    const response = await apiClient.get(`${API_ENDPOINTS.SUPPLEMENT.SCHEDULE}/${supplementId}`, {
+    const response = await apiClient.get(API_ENDPOINTS.SUPPLEMENT.SCHEDULE(supplementId), {
       params: { memberId }
     });
     return response.data.data;

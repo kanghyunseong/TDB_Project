@@ -106,7 +106,7 @@ export const MemberCard: React.FC<MemberCardProps> = ({
               {member.name}
             </Text>
             <Text style={[styles.memberRole, { color: isDark ? '#888' : '#666' }]}>
-              {member.age}세 • {member.role === 'parent' ? '부모' : '자녀'}
+              {member.age}세 • {member.role === 'parent' ? '보호자' : '자녀'}
             </Text>
           </View>
         </View>

@@ -3,7 +3,6 @@ import {
   StyleSheet,
   View,
   Text,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   KeyboardAvoidingView,
@@ -11,6 +10,7 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import colors from '../../constants/colors';
 import InputField from '../../components/InputField';
 import CustomButton from '../../components/CustomButton';
@@ -147,11 +147,11 @@ const SignupScreen: React.FC = () => {
       // 🔥 띄어쓰기 제거 처리
       if (typeof parentId === 'string') {
         parentId = parentId.replace(/\s+/g, '');
-        console.log('🔧 띄어쓰기 제거된 부모 ID:', parentId);
+        console.log('🔧 띄어쓰기 제거된 보호자 ID:', parentId);
       }
       
       if (!parentId) {
-        throw new Error('QR 코드에서 부모 계정 ID를 찾을 수 없습니다.');
+        throw new Error('QR 코드에서 보호자 계정 ID를 찾을 수 없습니다.');
       }
       
       setParentUserId(parentId);
@@ -159,7 +159,7 @@ const SignupScreen: React.FC = () => {
       Toast.show({
         type: 'success',
         text1: 'QR 코드 스캔 완료',
-        text2: `부모 계정 ID: ${parentId}`,
+        text2: `보호자 계정 ID: ${parentId}`,
         position: 'bottom',
       });
     } catch (error) {
@@ -175,7 +175,7 @@ const SignupScreen: React.FC = () => {
       Toast.show({
         type: 'success',
         text1: 'QR 코드 스캔 완료',
-        text2: '부모 계정 ID가 입력되었습니다.',
+        text2: '보호자 계정 ID가 입력되었습니다.',
         position: 'bottom',
       });
     }
@@ -278,7 +278,7 @@ const SignupScreen: React.FC = () => {
 
   const validateParentUserId = (value: string) => {
     if (accountType === 'child' && !value.trim()) {
-      setParentUserIdError('부모 계정 ID를 입력해주세요');
+      setParentUserIdError('보호자 계정 ID를 입력해주세요');
       return false;
     }
     setParentUserIdError('');
@@ -354,7 +354,19 @@ const SignupScreen: React.FC = () => {
         took_today: 0
       };
 
+      // 🔥 회원가입 전 데이터 확인
+      console.log('🔐 [회원가입] 전송할 데이터:', {
+        user_id: signupData.user_id,
+        name: signupData.name,
+        role: signupData.role,
+        입력한_이름: name,
+        실제_전송_이름: signupData.name,
+        이름_일치: name === signupData.name
+      });
+
       const response = await signup(signupData);
+
+      console.log('📥 [회원가입] 서버 응답:', response);
 
       if (response.success) {
       Toast.show({
@@ -386,7 +398,7 @@ const SignupScreen: React.FC = () => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardAvoidingView}
@@ -502,7 +514,7 @@ const SignupScreen: React.FC = () => {
                         accountType === 'parent' && styles.selectedAccountTypeText,
                       ]}
                     >
-                      메인 계정
+                      보호자 계정
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -522,7 +534,7 @@ const SignupScreen: React.FC = () => {
                         accountType === 'child' && styles.selectedAccountTypeText,
                       ]}
                     >
-                      자식 계정
+                      자녀 계정
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -531,10 +543,10 @@ const SignupScreen: React.FC = () => {
               {accountType === 'child' && (
                 <View style={styles.connectContainer}>
                   <InputField
-                    label="부모 계정 ID"
+                    label="보호자 계정 ID"
                     value={parentUserId}
                     onChangeText={handleParentUserIdChange}
-                    placeholder="부모 계정의 ID를 입력하세요"
+                    placeholder="보호자 계정의 ID를 입력하세요"
                     error={parentUserIdError}
                     onBlur={() => setParentUserIdTouched(true)}
                     touched={parentUserIdTouched}
@@ -602,18 +614,18 @@ const SignupScreen: React.FC = () => {
                 // 🔥 띄어쓰기 제거 처리
                 if (typeof parentId === 'string') {
                   parentId = parentId.replace(/\s+/g, '');
-                  console.log('🔧 띄어쓰기 제거된 부모 ID:', parentId);
+                  console.log('🔧 띄어쓰기 제거된 보호자 ID:', parentId);
                 }
                 
                 if (!parentId) {
-                  throw new Error('QR 코드에서 부모 계정 ID를 찾을 수 없습니다.');
+                  throw new Error('QR 코드에서 보호자 계정 ID를 찾을 수 없습니다.');
                 }
                 
                   setParentUserId(parentId);
                 Toast.show({
                   type: 'success',
                   text1: 'QR 코드 스캔 완료',
-                  text2: `부모 계정 ID: ${parentId}`,
+                  text2: `보호자 계정 ID: ${parentId}`,
                   position: 'bottom',
                 });
               } catch (error) {
@@ -628,7 +640,7 @@ const SignupScreen: React.FC = () => {
                 Toast.show({
                   type: 'success',
                   text1: 'QR 코드 스캔 완료',
-                  text2: '부모 계정 ID가 입력되었습니다.',
+                  text2: '보호자 계정 ID가 입력되었습니다.',
                   position: 'bottom',
                 });
               }

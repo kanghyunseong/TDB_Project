@@ -5,13 +5,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
   Alert,
   ScrollView,
   FlatList,
   Platform,
-} from 'react-native';
+  StatusBar} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { MainStackParamList } from '../types/navigation';
@@ -22,7 +22,8 @@ import { getFamilyMembers, type FamilyMember } from '../api/family';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Feather from 'react-native-vector-icons/Feather';
 import { mainNavigations } from '../constants/navigation';
-import medicineData from '../assets/medicine.json';
+// 🔥 JSON 파일 import 제거 (데이터베이스 사용)
+// import medicineData from '../assets/medicine.json';
 import ModalSelector from 'react-native-modal-selector';
 import Toast from 'react-native-toast-message';
 import { DISPENSER_CONFIG } from '../constants/dispenser';
@@ -58,14 +59,14 @@ function MedicineEditScreen({ route, navigation }: Props) {
     }
     loadMemberInfo();
     
-    // 자식 계정 권한 체크 - 새 약 추가만 제한, 조회는 허용
+    // 자녀 계정 권한 체크 - 새 약 추가만 제한, 조회는 허용
     const checkUserPermission = async () => {
       try {
         const userJson = await AsyncStorage.getItem('@user');
         if (userJson) {
           const userData = JSON.parse(userJson);
           setUserRole(userData.role || 'parent');
-          // 자식 계정에서 새 약 추가만 제한 (기존 약 조회/편집은 허용)
+          // 자녀 계정에서 새 약 추가만 제한 (기존 약 조회/편집은 허용)
           if (userData.role === 'child' && isNewMedicine) {
             Toast.show({
               type: 'info',
@@ -220,11 +221,16 @@ function MedicineEditScreen({ route, navigation }: Props) {
     return match ? match[1] : '';
   };
 
-  // 약 이름으로 권장량 찾기
-  function getDosageByItemName(itemName: string) {
-    if (!Array.isArray(medicineData)) return '';
-    const med = medicineData.find((m: any) => m['제품명 [ITEMNAME] '] === itemName);
-    return med ? med['문항2(사용법) [USEMETHODQESITM] '] : '';
+  // 약 이름으로 권장량 찾기 (서버 API 사용)
+  async function getDosageByItemName(itemName: string): Promise<string> {
+    try {
+      const { findMedicineMasterByName } = await import('../api/medicineMaster');
+      const med = await findMedicineMasterByName(itemName);
+      return med ? (med.intake_method || '') : '';
+    } catch (error) {
+      console.error('약물 정보 조회 실패:', error);
+      return '';
+    }
   }
 
   const handleSelectMedicine = async (medicine: MedicineSearchResult) => {
@@ -244,12 +250,14 @@ function MedicineEditScreen({ route, navigation }: Props) {
       // 404 에러가 아닌 경우에만 상세정보 사용
       if (!details?.isNotFound && details?.success && details?.data) {
         doseCount = extractDoseCountFromUseMethod(details.data.useMethodQesitm) || '1';
-        dosage = getDosageByItemName(medicine.itemName) || extractDosageFromUseMethod(details.data.useMethodQesitm);
+        const dbDosage = await getDosageByItemName(medicine.itemName);
+        dosage = dbDosage || extractDosageFromUseMethod(details.data.useMethodQesitm);
       } else {
         // 404 에러이거나 상세정보가 없는 경우 기본값 사용
         console.log('상세정보 없음 - 기본값 사용:', medicine.itemName);
         doseCount = '1';
-        dosage = getDosageByItemName(medicine.itemName) || extractDosageFromUseMethod(medicine.useMethodQesitm);
+        const dbDosage = await getDosageByItemName(medicine.itemName);
+        dosage = dbDosage || extractDosageFromUseMethod(medicine.useMethodQesitm);
       }
       
       console.log('추출된 doseCount:', doseCount);
@@ -262,11 +270,12 @@ function MedicineEditScreen({ route, navigation }: Props) {
     } catch (error) {
       console.error('상세정보 조회 중 오류:', error);
       // 에러 발생 시 기본값 사용
+      const dbDosage = await getDosageByItemName(medicine.itemName);
       setMedicine(prev => ({ 
         ...prev, 
         doseCount: '1', 
         totalQuantity: '',
-        dosage: getDosageByItemName(medicine.itemName) || extractDosageFromUseMethod(medicine.useMethodQesitm)
+        dosage: dbDosage || extractDosageFromUseMethod(medicine.useMethodQesitm)
       }));
     } finally {
       setIsLoading(false);
@@ -300,7 +309,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
         return;
       }
       
-      // 부모 자신의 약인 경우에도 기본값 설정
+      // 보호자 자신의 약인 경우에도 기본값 설정
       if (member.role === 'parent' && (!medicine.totalQuantity?.trim() || !medicine.doseCount?.trim())) {
         if (!medicine.totalQuantity?.trim()) {
           setMedicine(prev => ({ ...prev, totalQuantity: '30' })); // 기본값
@@ -310,7 +319,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
         }
       }
       
-      // 🚨 자식 계정 체크 추가
+      // 🚨 자녀 계정 체크 추가
       if (user.role === 'child') {
         Toast.show({
           type: 'info',
@@ -334,7 +343,10 @@ function MedicineEditScreen({ route, navigation }: Props) {
         memberType: member.role === 'parent' ? 'parent' : 'child',
         memberId: member.user_id,
       });
-      const medicineData: Omit<Medicine, 'id'> = {
+      // 🔥 target_users 설정 (자녀의 약인 경우 해당 자녀 ID 포함)
+      const targetUsers = member.role === 'parent' ? [] : [member.user_id];
+      
+      const medicineData: Partial<Medicine> & { target_users?: string[] | null } = {
         medi_id: selectedMedicine.itemSeq,
         name: selectedMedicine.itemName,
         warning: 0,
@@ -343,9 +355,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
         doseCount: medicine.doseCount,
         start_date: medicine.startDate,
         end_date: medicine.endDate,
-        memberName: member.name,
-        memberType: member.role === 'parent' ? 'parent' : 'child',
-        user_id: mainUserId,
+        target_users: targetUsers.length > 0 ? targetUsers : null, // 🔥 target_users 추가
         group_id: user.group_id, // 그룹 기반에서 필요
       };
       const result = await saveMedicine(medicineData);
@@ -676,7 +686,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
         <View style={styles.targetUserInfo}>
           <Text style={styles.targetUserLabel}>약 등록 대상</Text>
           <Text style={styles.targetUserName}>
-            {selectedMember.name} ({selectedMember.role === 'parent' ? '부모' : '자녀'})
+            {selectedMember.name} ({selectedMember.role === 'parent' ? '보호자' : '자녀'})
           </Text>
           {selectedMember.role !== 'parent' && (
             <Text style={styles.targetUserNote}>
@@ -695,7 +705,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
         </Text>
       </View>
       
-      {/* 총량 및 복용량 입력 필드 - 부모 계정에서만 표시 */}
+      {/* 총량 및 복용량 입력 필드 - 보호자 계정에서만 표시 */}
       {userRole === 'parent' && (
         <View style={styles.quantityContainer}>
           <View style={styles.quantityRow}>
@@ -735,7 +745,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
             ℹ️ 약물 정보 조회 모드
           </Text>
           <Text style={styles.childNoticeSubText}>
-            총량과 복용량 설정은 메인 계정(부모)에서만 가능합니다
+            총량과 복용량 설정은 메인 계정(보호자)에서만 가능합니다
           </Text>
         </View>
       )}
@@ -791,7 +801,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
 
   if (isLoading && !isNewMedicine) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.WHITE} />
         </View>
@@ -800,7 +810,7 @@ function MedicineEditScreen({ route, navigation }: Props) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollViewContent}>
         {renderSearchForm()}
         {renderMedicineDetails()}

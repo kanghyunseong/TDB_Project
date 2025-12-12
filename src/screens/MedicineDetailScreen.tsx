@@ -3,14 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   Alert,
   TouchableOpacity,
   TextInput,
   Modal,
-} from 'react-native';
+  StatusBar} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { MainStackParamList } from '../types/navigation';
 import { User } from '../types';
@@ -26,10 +26,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Toast from 'react-native-toast-message';
 import { useTheme } from '../contexts/ThemeContext';
 import { CommonActions } from '@react-navigation/native';
-import { saveMedicine, getFamilyMembers, type FamilyMember } from '../api/family';
+import { saveMedicine, getFamilyMembers, getMedicineList, type FamilyMember } from '../api/family';
 import { NewMedicine, Medicine } from '../types/tdb';
 import { formatDateField } from '../utils/dateUtils';
 import { getCurrentUser } from '../api/userStorage';
+import { DrugInteractionValidator } from '../utils/drugInteractionValidator';
 
 type Props = NativeStackScreenProps<MainStackParamList, 'MedicineDetail'>;
 
@@ -47,6 +48,7 @@ interface MedicineDetailScreenProps {
 }
 
 const MedicineDetailScreen = ({ route, navigation }: Props) => {
+  const insets = useSafeAreaInsets();
   const { colors: themeColors, isDark } = useTheme();
   const { medicineId, medicineName, memberId, isParent, detail } = route.params;
   const [medicineDetail, setMedicineDetail] = useState<MedicineDetail | null>(null);
@@ -104,45 +106,21 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
     return age;
   };
 
-  // 🔥 **약물 연령 유효성 검사 함수**
-  const validateMedicineForAge = (age: number, medicineName: string) => {
-    const warnings: string[] = [];
-    const errors: string[] = [];
-    let adjustedDose = 1;
-
-    // 기본 연령 제한
-    if (age < 2) {
-      errors.push('2세 미만 영아는 약물 복용이 금지됩니다.');
-      adjustedDose = 0;
-    } else if (age < 7) {
-      warnings.push('7세 미만은 전문의 상담이 필요합니다.');
-      adjustedDose = 0.25;
-    } else if (age >= 8 && age <= 14) {
-      warnings.push('소아용 용량으로 조정됩니다.');
-      adjustedDose = 0.5;
-    }
-
-    // 약물명 기반 추가 검증
-    if (medicineName.includes('진통') && age < 6) {
-      errors.push('6세 미만에게는 이 진통제가 금지됩니다.');
-      adjustedDose = 0;
-    }
-    if (medicineName.includes('아스피린') && age < 16) {
-      errors.push('16세 미만에게는 아스피린 복용이 권장되지 않습니다.');
-      adjustedDose = 0;
-    }
-
-    return {
-      isValid: errors.length === 0,
-      warnings,
-      errors,
-      adjustedDose
-    };
-  };
+  // 🔥 로컬 validateMedicineForAge 함수 제거 - utils/ageValidation의 함수 사용
 
   // 🔥 **가족 구성원 연령 유효성 검사**
   const validateFamilyMembersAge = async () => {
+    if (!medicineDetail) {
+      console.log('⚠️ [유효성 검사] medicineDetail이 없어 검사를 건너뜁니다.');
+      return;
+    }
+    
     const results: { [userId: string]: any } = {};
+    
+    console.log('🔍 [유효성 검사] 가족 구성원 연령 유효성 검사 시작:', {
+      familyMembersCount: familyMembers.length,
+      medicineName: medicineDetail.name
+    });
     
     for (const member of familyMembers) {
       try {
@@ -150,18 +128,58 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
         if (response.success && response.data) {
           const age = response.data.age || calculateAge(response.data.birthDate || null);
           if (age !== null) {
-            const validation = validateMedicineForAge(age, medicineDetail?.name || '');
-            results[member.user_id] = {
-              age,
-              ...validation
+            // 🔥 medicineDetail의 precautions가 배열이면 문자열로 변환
+            const getStringValue = (value: any): string => {
+              if (!value) return '';
+              if (Array.isArray(value)) {
+                return value.length > 0 ? String(value[0]) : '';
+              }
+              return String(value);
             };
+            
+            const precautionsText = getStringValue(medicineDetail.precautions);
+            // 🔥 타입 안전성을 위해 any로 캐스팅하여 접근
+            const medicineDetailAny = medicineDetail as any;
+            const iftknText = getStringValue(medicineDetailAny.IFTKN_ATNT_MATR_CN);
+            const atpnText = getStringValue(medicineDetailAny.atpnQesitm);
+            
+            // 🔥 우선순위: precautions > IFTKN_ATNT_MATR_CN > atpnQesitm
+            const finalPrecautionsText = precautionsText || iftknText || atpnText;
+            
+            const medicineInfoForValidation = {
+              ...medicineDetail,
+              precautions: finalPrecautionsText,
+              // 🔥 주의사항 필드명 호환성 확보
+              IFTKN_ATNT_MATR_CN: finalPrecautionsText,
+              atpnQesitm: finalPrecautionsText,
+            };
+            
+            // 🔥 validateMedicineForAge는 medicineInfo 객체를 받음
+            const validation = validateMedicineForAge(age, medicineInfoForValidation, {
+              strictMode: true,
+              includeDetailedWarnings: true
+            });
+            // 🔥 validation 객체에 age 추가 (validation.age가 null일 수 있음)
+            results[member.user_id] = {
+              ...validation,
+              age
+            };
+            console.log(`✅ [유효성 검사] ${member.name} (${age}세):`, {
+              isValid: validation.isValid,
+              errors: validation.errors.length,
+              warnings: validation.warnings.length,
+              adjustedDose: validation.adjustedDose
+            });
+          } else {
+            console.log(`⚠️ [유효성 검사] ${member.name}: 나이 정보 없음`);
           }
         }
       } catch (error) {
-        console.error(`사용자 ${member.user_id} 정보 로드 실패:`, error);
+        console.error(`❌ [유효성 검사] 사용자 ${member.user_id} 정보 로드 실패:`, error);
       }
     }
     
+    console.log('✅ [유효성 검사] 검사 완료:', Object.keys(results).length, '명');
     setAgeValidationResults(results);
   };
 
@@ -199,30 +217,72 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
     loadUser();
 
     if (detail) {
-      console.log('✅ detail 정보가 있어서 외부 API 상세정보 사용');
+      if (__DEV__) {
+        console.log('[MedicineDetailScreen] detail 정보 사용');
+      }
       // 외부 API에서 가져온 상세 정보가 있는 경우
+      // 🔥 주요성분 필드: 여러 가능한 필드명 체크 (백업 파일에는 성분 필드가 없을 수 있음)
+      const ingredientsValue = (detail["문항3(성분) [ITEMINGREDIENT] "] && detail["문항3(성분) [ITEMINGREDIENT] "].trim()) || 
+                                (detail["RAWMTRL_NM"] && detail["RAWMTRL_NM"].trim()) || 
+                                (detail["raw_materials"] && detail["raw_materials"].trim()) || 
+                                (detail["ITEMINGREDIENT"] && detail["ITEMINGREDIENT"].trim()) ||
+                                (detail["ingredients"] && detail["ingredients"].trim()) ||
+                                '정보 없음';
+      
+      // 🔥 부작용 필드: 여러 가능한 필드명 체크 (빈 문자열도 체크)
+      const sideEffectsValue = (detail["문항6(부작용) [SEQESITM] "] && detail["문항6(부작용) [SEQESITM] "].trim()) || 
+                               (detail["SEQESITM"] && detail["SEQESITM"].trim()) || 
+                               (detail["seQesitm"] && detail["seQesitm"].trim()) || 
+                               (detail["side_effects"] && detail["side_effects"].trim()) ||
+                               (detail["sideEffects"] && detail["sideEffects"].trim()) ||
+                               (detail["intrcQesitm"] && detail["intrcQesitm"].trim()) || // 상호작용 정보도 부작용으로 포함
+                               '해당 정보는 현재 제공되지 않습니다';
+      
+      // 🔥 디버깅 로그
+      if (__DEV__) {
+        console.log('🔍 [MedicineDetailScreen] 필드 매핑 확인:', {
+          '문항6(부작용) [SEQESITM] ': detail["문항6(부작용) [SEQESITM] "],
+          '부작용 최종값': sideEffectsValue,
+          '주요성분 최종값': ingredientsValue,
+          'raw_materials': detail["raw_materials"],
+          'RAWMTRL_NM': detail["RAWMTRL_NM"]
+        });
+      }
+      
       setMedicineDetail({
-        id: detail["품목기준코드 [ITEMSEQ] "],
-        name: detail["제품명 [ITEMNAME] "],
-        manufacturer: detail["업체명 [ENTPNAME] "],
-        ingredients: [detail["문항1(효능) [EFCYQESITM] "] || '정보 없음'],
-        usage: detail["문항2(사용법) [USEMETHODQESITM] "] || '정보 없음',
-        precautions: [detail["문항4(주의사항) [ATPNQESITM] "] || '정보 없음'],
-        sideEffects: [detail["문항6(부작용) [SEQESITM] "] || '해당 정보는 현재 제공되지 않습니다'],
-        storage: detail["문항7(보관법) [DEPOSITMETHODQESITM] "] || '해당 정보는 현재 제공되지 않습니다',
-        efficacy: detail["문항1(효능) [EFCYQESITM] "] || '정보 없음',
+        id: detail["품목기준코드 [ITEMSEQ] "] || detail["report_no"] || detail["itemSeq"],
+        name: detail["제품명 [ITEMNAME] "] || detail["PRDLST_NM"] || detail["itemName"] || detail["name"] || '',
+        manufacturer: detail["업체명 [ENTPNAME] "] || detail["BSSH_NM"] || detail["entpName"] || detail["company_name"] || '정보 없음',
+        ingredients: Array.isArray(ingredientsValue) ? ingredientsValue : [ingredientsValue],
+        usage: detail["문항2(사용법) [USEMETHODQESITM] "] || detail["NTK_MTHD"] || detail["useMethodQesitm"] || detail["intake_method"] || '정보 없음',
+        precautions: [detail["문항4(주의사항) [ATPNQESITM] "] || detail["IFTKN_ATNT_MATR_CN"] || detail["atpnQesitm"] || detail["atpnWarnQesitm"] || detail["precautions"] || '정보 없음'],
+        sideEffects: Array.isArray(sideEffectsValue) ? sideEffectsValue : [sideEffectsValue],
+        storage: detail["문항7(보관법) [DEPOSITMETHODQESITM] "] || detail["CSTDY_MTHD"] || detail["depositMethodQesitm"] || detail["storage_method"] || '해당 정보는 현재 제공되지 않습니다',
+        efficacy: detail["문항1(효능) [EFCYQESITM] "] || detail["PRIMARY_FNCLTY"] || detail["efcyQesitm"] || detail["primary_function"] || '정보 없음',
       });
       setIsLoading(false);
     } else if (medicineId && medicineName) {
-      console.log('✅ 저장된 약물 상세정보 로드:', { medicineId, medicineName });
+      if (__DEV__) {
+        console.log('[MedicineDetailScreen] 저장된 약물 상세정보 로드:', { medicineId, medicineName });
+      }
       // 🔥 저장된 약물 정보를 먼저 로드한 후 상세정보 로드
-      loadStoredMedicineInfo().then(() => {
-        loadMedicineDetailByName();
-      });
+      const loadSequentially = async () => {
+        try {
+          await loadStoredMedicineInfo();
+          loadMedicineDetailByName();
+        } catch (error) {
+          if (__DEV__) {
+            console.error('[MedicineDetailScreen] 약물 정보 로드 실패:', error);
+          }
+          setError('약 정보를 불러오는데 실패했습니다.');
+          setIsLoading(false);
+        }
+      };
+      loadSequentially();
     } else {
-      console.log('❌ 조건 불일치 - 에러 설정');
-      console.log('❌ medicineId 체크:', !!medicineId, medicineId);
-      console.log('❌ medicineName 체크:', !!medicineName, medicineName);
+      if (__DEV__) {
+        console.log('[MedicineDetailScreen] 조건 불일치:', { medicineId: !!medicineId, medicineName: !!medicineName });
+      }
       setError('약 정보를 찾을 수 없습니다.');
       setIsLoading(false);
     }
@@ -239,171 +299,84 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
 
   const loadMedicineDetailByName = async () => {
     try {
-      console.log('🚀 [MedicineDetailScreen] loadMedicineDetailByName 시작');
-      console.log('📋 검색할 약물명:', medicineName);
+      if (__DEV__) {
+        console.log('[MedicineDetailScreen] loadMedicineDetailByName 시작:', medicineName);
+      }
       console.log('📋 medicineId:', medicineId);
       console.log('📋 현재 isLoading 상태:', isLoading);
       
       setIsLoading(true);
-      console.log('📞 로컬 JSON 파일에서 약 정보 검색:', medicineName);
+      console.log('📞 서버 API에서 약 정보 검색:', medicineName);
       
-      // 🔥 로컬 JSON 파일에서 검색
-      console.log('📋 medicine.json 파일 로딩 시작...');
-      const medicineData = require('../assets/medicine.json');
-      console.log('✅ 로컬 medicine.json 로드 완료, 총 약물 수:', medicineData?.length || 0);
-      
-      if (!medicineData || !Array.isArray(medicineData)) {
-        throw new Error('medicine.json 파일 형식이 올바르지 않습니다');
-      }
-      
-      // 약 이름으로 검색 (부분 매칭)
-      console.log('🔍 약물 검색 시작...');
-      console.log('🔍 검색할 약물명:', medicineName);
-      console.log('🔍 medicine.json에서 검색 시작...');
-      
-      const foundMedicine = medicineData.find((item: any) => {
-        const itemName = item["제품명 [ITEMNAME] "];
-        if (!itemName) return false;
-        
-        // 1. 정확히 일치하는 경우
-        if (itemName === medicineName) {
-          console.log('🎯 정확 매칭:', itemName);
-          return true;
-        }
-        
-        // 2. 대소문자 무시하고 정확히 일치하는 경우
-        if (itemName.toLowerCase() === medicineName.toLowerCase()) {
-          console.log('🎯 대소문자 무시 정확 매칭:', itemName);
-          return true;
-        }
-        
-        // 3. 부분 문자열 포함 (양방향) - 더 유연한 검색
-        const nameMatch = itemName.toLowerCase().includes(medicineName.toLowerCase()) ||
-                         medicineName.toLowerCase().includes(itemName.toLowerCase());
-        
-        if (nameMatch) {
-          console.log('🎯 부분 매칭된 약물:', itemName, '←→', medicineName);
-          return true;
-        }
-        
-        // 4. 괄호, 공백, 특수문자 제거 후 매칭
-        const cleanItemName = itemName.replace(/[\(\)\[\]]/g, '').replace(/\s+/g, '').replace(/[~!@#$%^&*]/g, '');
-        const cleanMedicineName = medicineName.replace(/[\(\)\[\]]/g, '').replace(/\s+/g, '').replace(/[~!@#$%^&*]/g, '');
-        
-        if (cleanItemName.toLowerCase().includes(cleanMedicineName.toLowerCase()) ||
-            cleanMedicineName.toLowerCase().includes(cleanItemName.toLowerCase())) {
-          console.log('🎯 정제된 이름으로 매칭:', cleanItemName, '←→', cleanMedicineName);
-          return true;
-        }
-        
-        // 5. 💊 주성분 기반 매칭 추가 (글루타티온 예시)
-        const extractMainIngredient = (name: string) => {
-          const match = name.match(/\(([^)]+)\)/); // 괄호 안 내용 추출
-          return match ? match[1] : '';
-        };
-        
-        const itemIngredient = extractMainIngredient(itemName);
-        const medicineIngredient = extractMainIngredient(medicineName);
-        
-        if (itemIngredient && medicineIngredient && 
-            itemIngredient.toLowerCase().includes(medicineIngredient.toLowerCase())) {
-          console.log('🎯 주성분 매칭:', itemIngredient, '←→', medicineIngredient);
-          return true;
-        }
-        
-        // 6. 💊 숫자와 단위 제거 후 약물명 부분만 매칭
-        const extractDrugName = (name: string) => {
-          return name.replace(/\d+(\.\d+)?(mg|g|μg|㎍|밀리그램|그램|마이크로그램)/gi, '')
-                    .replace(/[\(\)\[\]]/g, '')
-                    .replace(/\s+/g, '')
-                    .toLowerCase();
-        };
-        
-        const itemDrugName = extractDrugName(itemName);
-        const medicineDrugName = extractDrugName(medicineName);
-        
-        if (itemDrugName.includes(medicineDrugName) || medicineDrugName.includes(itemDrugName)) {
-          console.log('🎯 약물명 기반 매칭:', itemDrugName, '←→', medicineDrugName);
-          return true;
-        }
-        
-        return false;
-      });
+      // 🔥 서버 API에서 검색 (데이터베이스 사용)
+      console.log('📋 서버 API 호출 시작...');
+      const { findMedicineMasterByName } = await import('../api/medicineMaster');
+      const foundMedicine = await findMedicineMasterByName(medicineName);
       
       if (foundMedicine) {
-        console.log('✅ 로컬 JSON에서 약물 정보 찾음:', foundMedicine["제품명 [ITEMNAME] "]);
+        console.log('✅ 서버에서 약물 정보 찾음:', foundMedicine.name);
+        console.log('🔍 [DEBUG] foundMedicine 전체 데이터:', JSON.stringify(foundMedicine, null, 2));
+        console.log('🔍 [DEBUG] foundMedicine.side_effects:', foundMedicine.side_effects);
+        
+        // 🔥 타입 단언을 사용하여 모든 필드 접근 가능하도록 처리
+        const medicine = foundMedicine as any;
+        
+        // 🔥 주요성분 필드: 여러 가능한 필드명 체크 (빈 문자열도 체크)
+        const ingredientsValue = (foundMedicine.raw_materials && foundMedicine.raw_materials.trim()) || 
+                                 (medicine.RAWMTRL_NM && medicine.RAWMTRL_NM.trim()) || 
+                                 (medicine.ITEMINGREDIENT && medicine.ITEMINGREDIENT.trim()) ||
+                                 (medicine["문항3(성분) [ITEMINGREDIENT] "] && medicine["문항3(성분) [ITEMINGREDIENT] "].trim()) ||
+                                 '정보 없음';
+        
+        // 🔥 부작용 필드: 여러 가능한 필드명 체크 (빈 문자열도 체크)
+        const sideEffectsValue = (foundMedicine.side_effects && foundMedicine.side_effects.trim()) ||  // 🔥 데이터베이스 필드 우선
+                                 (medicine.SEQESITM && medicine.SEQESITM.trim()) || 
+                                 (medicine.seQesitm && medicine.seQesitm.trim()) || 
+                                 (medicine["문항6(부작용) [SEQESITM] "] && medicine["문항6(부작용) [SEQESITM] "].trim()) ||
+                                 (medicine.side_effects && medicine.side_effects.trim()) ||
+                                 (medicine.intrcQesitm && medicine.intrcQesitm.trim()) || // 상호작용 정보도 부작용으로 포함
+                                 '해당 정보는 현재 제공되지 않습니다';
+        
+        console.log('🔍 [DEBUG] sideEffectsValue:', sideEffectsValue);
+        console.log('🔍 [DEBUG] sideEffectsValue 길이:', sideEffectsValue?.length);
+        console.log('🔍 [DEBUG] sideEffectsValue가 "해당 정보는 현재 제공되지 않습니다"인가?', sideEffectsValue === '해당 정보는 현재 제공되지 않습니다');
         
         const medicineDetail = {
-          id: foundMedicine["품목기준코드 [ITEMSEQ] "] || medicineId,
-          name: foundMedicine["제품명 [ITEMNAME] "] || medicineName,
-          manufacturer: foundMedicine["업체명 [ENTPNAME] "] || '정보 없음',
-          ingredients: [foundMedicine["문항1(효능) [EFCYQESITM] "] || '정보 없음'],
-          usage: foundMedicine["문항2(사용법) [USEMETHODQESITM] "] || '정보 없음',
-          precautions: [foundMedicine["문항4(주의사항) [ATPNQESITM] "] || '정보 없음'],
-          sideEffects: [foundMedicine["문항6(부작용) [SEQESITM] "] || '해당 정보는 현재 제공되지 않습니다'],
-          storage: foundMedicine["문항7(보관법) [DEPOSITMETHODQESITM] "] || '해당 정보는 현재 제공되지 않습니다',
-          efficacy: foundMedicine["문항1(효능) [EFCYQESITM] "] || '정보 없음',
+          id: foundMedicine.report_no || medicineId,
+          name: foundMedicine.name || medicineName,
+          manufacturer: foundMedicine.company_name || '정보 없음',
+          ingredients: Array.isArray(ingredientsValue) ? ingredientsValue : [ingredientsValue],
+          usage: foundMedicine.intake_method || medicine.NTK_MTHD || '정보 없음',
+          precautions: [foundMedicine.precautions || medicine.IFTKN_ATNT_MATR_CN || '정보 없음'],
+          sideEffects: Array.isArray(sideEffectsValue) ? sideEffectsValue : [sideEffectsValue],
+          storage: foundMedicine.storage_method || medicine.CSTDY_MTHD || '해당 정보는 현재 제공되지 않습니다',
+          efficacy: foundMedicine.primary_function || medicine.PRIMARY_FNCLTY || '정보 없음',
         };
         
         console.log('📋 설정할 약물 상세정보:', medicineDetail);
+        console.log('🔍 [DEBUG] medicineDetail.sideEffects:', medicineDetail.sideEffects);
         setMedicineDetail(medicineDetail);
-        console.log('✅ 로컬 JSON으로 약물 상세정보 설정 완료');
+        console.log('✅ 서버 API로 약물 상세정보 설정 완료');
       } else {
-        console.log('❌ 로컬 JSON에서 약물 정보를 찾을 수 없음');
-        console.log('🔄 저장된 약물 정보 로드 시도...');
-        
-        // 저장된 약물 정보가 있는지 확인
-        let storedInfo = null;
-        if (storedMedicineInfo) {
-          storedInfo = storedMedicineInfo;
-          console.log('✅ 저장된 약물 정보 사용:', storedInfo);
-        }
-        
-        // 🎯 저장된 정보를 포함한 의미있는 기본 정보 구성
-        const ingredients = ['💊 저장된 의약품입니다'];
-        let usage = '복용법: 처방전이나 약물 포장지를 확인해주세요';
-        const precautions = ['⚠️ 복용 전 주의사항을 반드시 확인하세요', '⚠️ 전문의와 상담 후 복용하세요'];
-        let manufacturer = '제조사 정보 없음';
-        
-        // 저장된 정보가 있으면 표시에 반영
-        if (storedInfo) {
-          if (storedInfo.slot) {
-            ingredients.unshift(`🏥 디스펜서 슬롯: ${storedInfo.slot}번`);
-          }
-          if (storedInfo.totalQuantity) {
-            manufacturer = `💊 저장된 수량: ${storedInfo.totalQuantity}개`;
-          }
-          if (storedInfo.startDate) {
-            usage += `\n📅 복용 시작일: ${new Date(storedInfo.startDate).toLocaleDateString('ko-KR')}`;
-          }
-          if (storedInfo.endDate) {
-            usage += `\n📅 복용 종료일: ${new Date(storedInfo.endDate).toLocaleDateString('ko-KR')}`;
-          }
-          if (storedInfo.targetUsers) {
-            const targetText = Array.isArray(storedInfo.targetUsers) && storedInfo.targetUsers.length > 0 
-              ? `특정 구성원 (${storedInfo.targetUsers.length}명)` 
-              : '가족 전체';
-            precautions.unshift(`👥 복용 대상: ${targetText}`);
-          }
-        }
-        
-        const defaultMedicineDetail = {
+        console.log('❌ 서버에서 약물 정보를 찾을 수 없음');
+        // 기본 상세정보 설정
+        const defaultDetail = {
           id: medicineId,
           name: medicineName,
-          manufacturer,
-          ingredients,
-          usage,
-          precautions,
-          sideEffects: ['부작용 발생 시 즉시 복용을 중단하고 전문가와 상담하세요', '📋 자세한 부작용 정보는 약물 포장지를 참고하세요'],
-          storage: '서늘하고 건조한 곳에 보관하며, 직사광선을 피해주세요',
-          efficacy: `💊 ${medicineName} 의 상세 효능은 처방전 또는 제품 설명서를 확인하세요`,
+          manufacturer: '정보 없음',
+          ingredients: ['정보 없음'],
+          usage: '정보 없음',
+          precautions: ['정보 없음'],
+          sideEffects: ['해당 정보는 현재 제공되지 않습니다'],
+          storage: '해당 정보는 현재 제공되지 않습니다',
+          efficacy: '정보 없음',
         };
-        
-        console.log('📋 기본 약물 상세정보 (저장 정보 포함):', defaultMedicineDetail);
-        setMedicineDetail(defaultMedicineDetail);
+        setMedicineDetail(defaultDetail);
       }
+      
+      setIsLoading(false);
     } catch (error) {
-      console.error('❌ 로컬 JSON 파일 로드 실패:', error);
+      console.error('❌ 서버 API 호출 실패:', error);
       console.error('❌ 에러 상세:', error instanceof Error ? error.message : String(error));
       
       const errorMedicineDetail = {
@@ -493,10 +466,18 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
   }, [selectedPeriod, isManualInput]);
 
   const handleAddToMyMedicines = async () => {
+    // 🔥 중복 호출 방지
+    if (isLoading) {
+      console.log('⚠️ [handleAddToMyMedicines] 이미 처리 중입니다.');
+      return;
+    }
+    
     if (!medicineName || !startDate || !endDate) {
       Toast.show({ type: 'error', text1: '필수 정보를 모두 입력해주세요.' });
       return;
     }
+    
+    setIsLoading(true);
 
     try {
       const userJson = await AsyncStorage.getItem('@user');
@@ -562,12 +543,115 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
 
       console.log('의약품 저장 요청 payload:', payload);
       
-      // 🔥 수정: family.ts의 saveMedicine 사용 (user_id, medicineData)
+      // 🔥 약물 등록 전 상호작용 검사
       const userData = await getCurrentUser();
       if (!userData) {
         throw new Error('사용자 정보를 찾을 수 없습니다.');
       }
+      
+      // 가족 구성원 목록 가져오기
+      const familyResponse = await getFamilyMembers();
+      if (!familyResponse.success || !familyResponse.data) {
+        throw new Error('가족 구성원 정보를 가져올 수 없습니다.');
+      }
+      
+      // 가족 전체 약물 목록 수집
+      const allFamilyMedicines: Medicine[] = [];
+      for (const member of familyResponse.data) {
+        try {
+          const medicineResponse = await getMedicineList(member.user_id);
+          if (medicineResponse.success && medicineResponse.data) {
+            allFamilyMedicines.push(...medicineResponse.data);
+          }
+        } catch (error) {
+          console.error(`약물 목록 조회 실패 (${member.name}):`, error);
+        }
+      }
+      
+      // 새로 등록하려는 약물을 임시로 추가하여 상호작용 검사
+      const newMedicine: Medicine = {
+        ...payload,
+        user_id: userData.user_id,
+      };
+      const medicinesToCheck = [...allFamilyMedicines, newMedicine];
+      
+      // 🔥 빠른 상호작용 검사 (알려진 상호작용만 체크, 2초 타임아웃)
+      if (medicinesToCheck.length >= 2) {
+        try {
+          console.log('🔍 [handleAddToMyMedicines] 빠른 상호작용 검사 시작...');
+          
+          // 🔥 알려진 상호작용만 빠르게 체크 (API 호출 없음)
+          const quickCheckPromise = DrugInteractionValidator.quickCheckKnownInteractions(medicinesToCheck);
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('상호작용 검사 시간 초과')), 2000); // 2초로 단축
+          });
+          
+          const quickResult = await Promise.race([quickCheckPromise, timeoutPromise]);
+          
+          if (quickResult.hasInteractions) {
+            // 새로 등록하려는 약물과 관련된 상호작용만 필터링
+            const relevantInteractions = quickResult.interactions.filter(
+              interaction => interaction.drugA === medicineName || interaction.drugB === medicineName
+            );
+            
+            if (relevantInteractions.length > 0) {
+              const criticalCount = relevantInteractions.filter(i => i.severity === 'critical').length;
+              const majorCount = relevantInteractions.filter(i => i.severity === 'major').length;
+              const severity = criticalCount > 0 ? 'critical' : majorCount > 0 ? 'major' : 'moderate';
+              const severityText = severity === 'critical' ? '심각한' : severity === 'major' ? '주요' : '중간';
+              
+              Alert.alert(
+                `⚠️ 약물 상호작용 발견`,
+                `${medicineName}과(와) 기존 약물 간 ${severityText} 상호작용이 발견되었습니다.\n\n등록된 약물과 함께 복용하면 위험할 수 있습니다.\n\n상호작용 약물:\n${relevantInteractions.map(i => `• ${i.drugA === medicineName ? i.drugB : i.drugA}`).join('\n')}\n\n약물 등록을 중단합니다.`,
+                [{ text: '확인', style: 'default' }]
+              );
+              return; // 약물 등록 차단
+            }
+          }
+          
+          console.log('✅ [handleAddToMyMedicines] 빠른 상호작용 검사 완료');
+          
+          // 🔥 상세 검사는 백그라운드에서 비동기로 처리 (약물 등록을 막지 않음)
+          DrugInteractionValidator.validateDrugInteractions(medicinesToCheck)
+            .then((detailedResult) => {
+              if (detailedResult.hasInteractions) {
+                const relevantInteractions = detailedResult.interactions.filter(
+                  interaction => interaction.drugA === medicineName || interaction.drugB === medicineName
+                );
+                
+                if (relevantInteractions.length > 0) {
+                  const criticalCount = relevantInteractions.filter(i => i.severity === 'critical').length;
+                  const majorCount = relevantInteractions.filter(i => i.severity === 'major').length;
+                  
+                  if (criticalCount > 0 || majorCount > 0) {
+                    // 백그라운드 검사 완료 후 경고 표시
+                    Toast.show({
+                      type: 'warning',
+                      text1: '⚠️ 추가 상호작용 발견',
+                      text2: '약물 등록 후 상세 상호작용 검사 결과를 확인하세요.',
+                    });
+                  }
+                }
+              }
+            })
+            .catch((error) => {
+              console.warn('⚠️ [handleAddToMyMedicines] 백그라운드 상호작용 검사 실패:', error);
+            });
+        } catch (error: any) {
+          // 🔥 빠른 검사 실패 시에도 계속 진행
+          console.warn('⚠️ [handleAddToMyMedicines] 빠른 상호작용 검사 실패:', error.message);
+        }
+      }
+      
+      // 🔥 수정: family.ts의 saveMedicine 사용 (user_id, medicineData)
+      console.log('🔍 [handleAddToMyMedicines] saveMedicine 호출 시작:', {
+        user_id: userData.user_id,
+        payload
+      });
+      
       const result = await saveMedicine(userData.user_id, payload);
+      
+      console.log('🔍 [handleAddToMyMedicines] saveMedicine 응답:', result);
       
       if (result.success) {
         const targetText = isAllFamily ? '가족 전체' : `${selectedTargetUsers.length}명`;
@@ -590,22 +674,24 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
         throw new Error(result.error?.message || '약 저장에 실패했습니다.');
       }
     } catch (error: any) {
-      console.error('약 저장 실패:', error);
+      console.error('❌ [handleAddToMyMedicines] 약 저장 실패:', error);
       
       // 서버에서 보낸 권한 관련 오류 메시지 처리
       if (error.message?.includes('메인 계정') || error.message?.includes('부모')) {
         Toast.show({
           type: 'error',
           text1: '약 등록 권한 없음',
-          text2: '메인 계정(부모)만 약을 등록할 수 있습니다.',
+          text2: '메인 계정(보호자)만 약을 등록할 수 있습니다.',
         });
       } else {
-      Toast.show({ 
-        type: 'error', 
-        text1: '약 저장 실패', 
-          text2: error.message || '알 수 없는 오류가 발생했습니다.',
-      });
+        Toast.show({ 
+          type: 'error', 
+          text1: '약 저장 실패', 
+          text2: error.message || '네트워크 오류가 발생했습니다. 서버 연결을 확인해주세요.',
+        });
       }
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -715,8 +801,9 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
-        <View style={styles.header}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
+        <View style={[styles.header, { paddingTop: insets.top + 10, backgroundColor: themeColors.card }]}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigation.goBack()}
@@ -734,8 +821,9 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
 
   if (error) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
-        <View style={styles.header}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
+        <View style={[styles.header, { paddingTop: insets.top + 10, backgroundColor: themeColors.card }]}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigation.goBack()}
@@ -753,8 +841,9 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
 
   if (!medicineDetail) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
-        <View style={styles.header}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
+        <View style={[styles.header, { paddingTop: insets.top + 10, backgroundColor: themeColors.card }]}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => navigation.goBack()}
@@ -771,8 +860,9 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
-      <View style={styles.header}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
+      <View style={[styles.header, { paddingTop: insets.top + 10, backgroundColor: themeColors.card }]}>
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => navigation.goBack()}
@@ -840,12 +930,25 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
           <Text style={[styles.manufacturer, { color: themeColors.text }]}>제조사: {medicineDetail.manufacturer}</Text>
         </View>
 
-        {medicineDetail.ingredients.length > 0 && (
+        {/* 🔥 주요성분 섹션: 데이터가 있거나 "정보 없음"이 아닐 때만 표시 */}
+        {medicineDetail.ingredients.length > 0 && medicineDetail.ingredients.some(ing => ing && ing.trim() && ing !== '정보 없음') && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>주요 성분</Text>
-            {medicineDetail.ingredients.map((ingredient, index) => (
-              <Text key={index} style={[styles.listItem, { color: themeColors.text }]}>• {ingredient}</Text>
-            ))}
+            {medicineDetail.ingredients
+              .filter(ing => ing && ing.trim() && ing !== '정보 없음')
+              .map((ingredient, index) => (
+                <Text key={index} style={[styles.listItem, { color: themeColors.text }]}>• {ingredient}</Text>
+              ))}
+          </View>
+        )}
+        
+        {/* 🔥 주요성분이 없을 때 안내 메시지 */}
+        {(!medicineDetail.ingredients || medicineDetail.ingredients.length === 0 || medicineDetail.ingredients.every(ing => !ing || !ing.trim() || ing === '정보 없음')) && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>주요 성분</Text>
+            <Text style={[styles.text, { color: isDark ? '#888' : '#666', fontStyle: 'italic' }]}>
+              해당 정보는 현재 제공되지 않습니다.
+            </Text>
           </View>
         )}
 
@@ -963,12 +1066,25 @@ const MedicineDetailScreen = ({ route, navigation }: Props) => {
           </View>
         )}
 
-        {medicineDetail.sideEffects.length > 0 && (
+        {/* 🔥 부작용 섹션: 데이터가 있거나 "해당 정보는 현재 제공되지 않습니다"가 아닐 때만 표시 */}
+        {medicineDetail.sideEffects.length > 0 && medicineDetail.sideEffects.some(effect => effect && effect.trim() && effect !== '해당 정보는 현재 제공되지 않습니다') && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>부작용</Text>
-            {medicineDetail.sideEffects.map((effect, index) => (
-              <Text key={index} style={[styles.listItem, { color: themeColors.text }]}>• {effect}</Text>
-            ))}
+            {medicineDetail.sideEffects
+              .filter(effect => effect && effect.trim() && effect !== '해당 정보는 현재 제공되지 않습니다')
+              .map((effect, index) => (
+                <Text key={index} style={[styles.listItem, { color: themeColors.text }]}>• {effect}</Text>
+              ))}
+          </View>
+        )}
+        
+        {/* 🔥 부작용이 없을 때 안내 메시지 */}
+        {(!medicineDetail.sideEffects || medicineDetail.sideEffects.length === 0 || medicineDetail.sideEffects.every(effect => !effect || !effect.trim() || effect === '해당 정보는 현재 제공되지 않습니다')) && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>부작용</Text>
+            <Text style={[styles.text, { color: isDark ? '#888' : '#666', fontStyle: 'italic' }]}>
+              해당 정보는 현재 제공되지 않습니다.
+            </Text>
           </View>
         )}
 

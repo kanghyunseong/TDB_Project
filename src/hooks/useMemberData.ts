@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from '../api/client';
 import { API_ENDPOINTS } from '../constants/api';
 import { FamilyMember, getFamilyMembers } from '../api/family';
 import { MemberWithProgress, MemberSchedule, DailyProgress, TimeSlotStatus } from '../types/member';
 import Toast from 'react-native-toast-message';
 import { useAuth } from '../contexts/AuthContext';
+import { CacheManager, CACHE_KEYS, CACHE_DURATION } from '../utils/cache';
 
 export const useMemberData = () => {
   const { isLogin } = useAuth();
@@ -14,6 +15,8 @@ export const useMemberData = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const isMountedRef = useRef(true); // 🔥 마운트 상태 추적
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 🔥 setTimeout ID 저장
 
   // 오늘의 복용 진행률 계산 (단순화된 버전)
   const calculateDailyProgress = useCallback((schedules: MemberSchedule[]): DailyProgress => {
@@ -87,9 +90,46 @@ export const useMemberData = () => {
   }, []); // calculateDailyProgress 의존성 제거
 
   // 데이터 로딩
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceRefresh = false) => {
     try {
       setError(null);
+      
+      // 🔥 캐시 확인 (강제 새로고침이 아닌 경우)
+      if (!forceRefresh) {
+        const user = await require('../api/userStorage').getCurrentUser();
+        if (user?.group_id) {
+          const cachedMembers = await CacheManager.get<FamilyMember[]>(
+            CACHE_KEYS.FAMILY_MEMBERS(user.group_id)
+          );
+          
+          if (cachedMembers && cachedMembers.length > 0) {
+            console.log('✅ [useMemberData] 캐시에서 가족 구성원 로드:', cachedMembers.length);
+            setFamilyMembers(cachedMembers);
+            
+            // 백그라운드에서 스케줄 조회
+            const schedulesMap: Record<string, MemberSchedule[]> = {};
+            for (const member of cachedMembers) {
+              schedulesMap[member.user_id] = [];
+            }
+            setUserSchedules(schedulesMap);
+            
+            const processed = processMembers(cachedMembers, schedulesMap);
+            setMembersWithProgress(processed);
+            setIsLoading(false);
+            
+            // 백그라운드에서 최신 데이터 조회
+            if (timeoutRef.current) {
+              clearTimeout(timeoutRef.current); // 🔥 기존 timeout 정리
+            }
+            timeoutRef.current = setTimeout(() => {
+              if (isMountedRef.current) { // 🔥 마운트 상태 확인
+                loadData(true);
+              }
+            }, 100);
+            return;
+          }
+        }
+      }
       
       // 구성원 목록 조회 (기존 getFamilyMembers 함수 사용)
       console.log('🔍 [useMemberData] 구성원 목록 조회 시작');
@@ -104,6 +144,16 @@ export const useMemberData = () => {
       const members = membersResponse.data || [];
       console.log('🔍 [useMemberData] 조회된 구성원 수:', members.length, members);
       setFamilyMembers(members);
+      
+      // 🔥 캐시 저장
+      const user = await require('../api/userStorage').getCurrentUser();
+      if (user?.group_id && members.length > 0) {
+        await CacheManager.set(
+          CACHE_KEYS.FAMILY_MEMBERS(user.group_id),
+          members,
+          CACHE_DURATION.MEDIUM
+        );
+      }
 
       // 구성원별 실시간 진행률 조회 (실제 API 사용)
       const progressPromises = members.map(async (member: FamilyMember) => {
@@ -395,9 +445,18 @@ export const useMemberData = () => {
 
   // 초기 로딩 (로그인 상태일 때만 실행)
   useEffect(() => {
+    isMountedRef.current = true; // 🔥 마운트 시 true로 설정
+    
     if (isLogin) {
       loadData();
     }
+    
+    return () => {
+      isMountedRef.current = false; // 🔥 언마운트 시 false로 설정
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current); // 🔥 cleanup: timeout 정리
+      }
+    };
   }, [isLogin]); // isLogin 상태에 따라 실행
 
   return {

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Dimensions
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../types/navigation';
@@ -80,6 +81,7 @@ const MemberDetailScreen: React.FC<MemberDetailScreenProps> = ({
   navigation, 
   route 
 }) => {
+  const insets = useSafeAreaInsets();
   const { memberId } = route.params;
   
   const [memberInfo, setMemberInfo] = useState<FamilyMember | null>(null);
@@ -355,7 +357,7 @@ const MemberDetailScreen: React.FC<MemberDetailScreenProps> = ({
         <View style={styles.memberDetails}>
           <Text style={styles.memberName}>{memberInfo?.name || '알 수 없음'}</Text>
           <Text style={styles.memberRole}>
-            {memberInfo?.role === 'parent' ? '👨‍👩‍👧‍👦 부모' : '👶 자녀'}
+            {memberInfo?.role === 'parent' ? '👨‍👩‍👧‍👦 보호자' : '👶 자녀'}
           </Text>
         </View>
       </View>
@@ -534,7 +536,7 @@ const MemberDetailScreen: React.FC<MemberDetailScreenProps> = ({
   }
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       {renderHeader()}
       {renderTabBar()}
       
@@ -542,7 +544,7 @@ const MemberDetailScreen: React.FC<MemberDetailScreenProps> = ({
         {activeTab === 'weekly' && renderWeeklyTab()}
         {activeTab === 'settings' && renderSettingsTab()}
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 };
 

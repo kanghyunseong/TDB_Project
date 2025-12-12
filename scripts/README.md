@@ -1,4 +1,21 @@
-# JSON 데이터 정리 스크립트 📋
+# Scripts 디렉토리 가이드 📋
+
+이 디렉토리에는 JSON 데이터 관리와 관련된 다양한 스크립트가 있습니다.
+
+## 📚 스크립트 목록
+
+### 1. 데이터 업데이트 스크립트
+- `fetch_tablet_data.py` - 건강기능식품 데이터 업데이트
+- `fetch_medicine_data.py` - 의약품 데이터 업데이트
+- 자세한 사용법: [UPDATE_DATA.md](./UPDATE_DATA.md)
+
+### 2. 데이터 정리 스크립트
+- `cleanJsonData.js` - JSON 파일의 비정상적인 패턴 정리
+- `clean_medicine_json.py` - 의약품 JSON 데이터 정리
+
+---
+
+## JSON 데이터 정리 스크립트 📋
 
 tablet.json과 medicine.json 파일의 비정상적인 패턴들을 자동으로 찾아서 정리하는 도구입니다.
 

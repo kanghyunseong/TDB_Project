@@ -214,24 +214,8 @@ export const ScheduleBasedDispenseModal: React.FC<ScheduleBasedDispenseModalProp
         throw new Error(dispenseResult.error?.message || '약물 배출에 실패했습니다.');
       }
 
-      // 3. 모든 시간대 복용 기록 저장
-      const timeSlots = ['morning', 'afternoon', 'evening'] as const;
-      
-      for (const timeOfDay of timeSlots) {
-        const dosage = medicine[timeOfDay];
-        if (dosage > 0) {
-          try {
-            const response = await scheduleApi.completeDose(medicine.medi_id, actualTargetUserId, timeOfDay, dosage);
-            if (!response.success) {
-              console.error(`🔥 [스케줄 배출] ${timeOfDay} 복용 기록 실패:`, response.error);
-            } else {
-              console.log(`✅ [스케줄 배출] ${timeOfDay} 복용 기록 성공`);
-            }
-          } catch (recordError) {
-            console.error(`🔥 [스케줄 배출] ${timeOfDay} 복용 기록 오류:`, recordError);
-          }
-        }
-      }
+      // 🔥 배출 API에서 이미 복용 기록을 생성하므로 추가 호출 불필요
+      console.log('✅ [스케줄 배출] 배출 완료 (복용 기록은 배출 API에서 자동 생성됨)');
       
       Toast.show({
         type: 'success',

@@ -1,9 +1,11 @@
-import React, { createContext, useState, useContext, ReactNode, useEffect } from 'react';
+import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
 import { signup as apiSignup, login as apiLogin, logout as apiLogout, checkAuth as apiCheckAuth } from '../api/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthState, UserRole } from '../types/tdb';
 import { SignupData } from '../types/auth';
-import { saveUser, getCurrentUser } from '../api/userStorage';
+import { saveUser, getCurrentUser, syncUserWithServer } from '../api/userStorage';
+import { INTERVALS } from '../constants/timeouts';
+import { setLoggingOutFlag } from '../api/client';
 
 interface AuthContextType {
     user: any;
@@ -33,8 +35,16 @@ export const setGlobalLogoutHandler = (handler: LogoutHandler) => {
 
 // 글로벌 로그아웃 실행 함수 (API 클라이언트에서 사용)
 export const executeGlobalLogout = async () => {
-    if (globalLogoutHandler) {
-        await globalLogoutHandler();
+    // 🔥 로그아웃 시작 시 플래그 설정 (401 에러로 인한 Toast 방지)
+    setLoggingOutFlag(true);
+    
+    try {
+        if (globalLogoutHandler) {
+            await globalLogoutHandler();
+        }
+    } finally {
+        // 🔥 로그아웃 완료 후 플래그 해제
+        setLoggingOutFlag(false);
     }
 };
 
@@ -84,8 +94,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loadAndVerifyUser();
     }, []);
 
-    // 로그아웃 처리 함수 (내부용)
-    const performLogout = async () => {
+    // 로그아웃 처리 함수 (내부용) - useCallback으로 안정화
+    const performLogout = useCallback(async () => {
         setUser(null);
         setToken(null);
         setIsLogin(false);
@@ -95,17 +105,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await AsyncStorage.removeItem(TOKEN_KEY);
         await AsyncStorage.removeItem(REFRESH_TOKEN_KEY);
         await AsyncStorage.removeItem('userInfo');
-    };
+    }, []);
 
     // 글로벌 로그아웃 핸들러 등록
     useEffect(() => {
         setGlobalLogoutHandler(performLogout);
         
-        // 컴포넌트 언마운트 시 핸들러 제거
+        // 🔥 user나 isLogin이 없으면 interval 생성하지 않음
+        if (!user?.user_id || !isLogin) {
+            return () => {
+                globalLogoutHandler = null;
+            };
+        }
+        
+        // 🔥 주기적 사용자 정보 동기화 (5분마다)
+        const syncInterval = setInterval(async () => {
+            try {
+                // 최신 user 정보를 다시 가져와서 사용 (stale closure 방지)
+                const currentUser = await getCurrentUser();
+                if (currentUser?.user_id) {
+                    if (__DEV__) {
+                        console.log('[AuthContext] 주기적 사용자 정보 동기화');
+                    }
+                    const syncedUser = await syncUserWithServer(currentUser.user_id);
+                    if (syncedUser) {
+                        // User 타입을 AuthState로 변환 (accessToken, refreshToken은 기존 값 유지)
+                        setUser(prev => ({
+                            ...syncedUser,
+                            accessToken: prev?.accessToken,
+                            refreshToken: prev?.refreshToken,
+                        } as AuthState));
+                    }
+                }
+            } catch (error) {
+                // 🔥 동기화 실패 시 조용히 처리 (로그만 기록)
+                if (__DEV__) {
+                    console.error('[AuthContext] 사용자 정보 동기화 실패:', error);
+                }
+            }
+        }, INTERVALS.USER_SYNC); // 🔥 상수 사용
+        
+        // 컴포넌트 언마운트 시 핸들러 제거 및 interval 정리
         return () => {
             globalLogoutHandler = null;
+            clearInterval(syncInterval);
         };
-    }, []);
+    }, [user?.user_id, isLogin, performLogout]); // 🔥 performLogout 의존성 추가
 
     const login = async (id: string, password: string) => {
         try {
@@ -166,11 +211,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 response: error.response?.data,
                 status: error.response?.status
             });
-            
-            // 서버에서 반환한 에러 메시지가 있는 경우
-            if (error.response?.data?.message) {
-                throw new Error(error.response.data.message);
-            }
             
             throw new Error(error.message || '로그인에 실패했습니다.');
         }
@@ -234,6 +274,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = async () => {
         try {
+            // 🔥 로그아웃 시작 시 플래그 설정 (401 에러로 인한 Toast 방지)
+            setLoggingOutFlag(true);
+            
             // API 로그아웃 시도 (실패해도 로컬 로그아웃은 진행)
             try {
                 await apiLogout();
@@ -245,6 +288,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } finally {
             // 로컬 로그아웃 처리
             await performLogout();
+            // 🔥 로그아웃 완료 후 플래그 해제
+            setLoggingOutFlag(false);
         }
     };
 

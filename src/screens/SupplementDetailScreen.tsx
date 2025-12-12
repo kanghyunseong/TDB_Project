@@ -3,12 +3,12 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
   TextInput,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { MainStackParamList } from '../types/navigation';
 import colors from '../constants/colors';
@@ -436,7 +436,7 @@ const SupplementDetailScreen = ({ route, navigation }: Props) => {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.PRIMARY.DEFAULT} />
           <Text style={[styles.loadingText, { color: themeColors.text }]}>로딩 중...</Text>
@@ -446,7 +446,7 @@ const SupplementDetailScreen = ({ route, navigation }: Props) => {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
@@ -910,7 +910,7 @@ const SupplementDetailScreen = ({ route, navigation }: Props) => {
                 ]}>
                   <Feather name="info" size={24} color={colors.PRIMARY.DEFAULT} />
                   <Text style={[styles.childAccountText, { color: themeColors.text }]}>
-                    영양제 등록은 부모 계정에서만 가능합니다.
+                    영양제 등록은 보호자 계정에서만 가능합니다.
                   </Text>
                 </View>
               </View>

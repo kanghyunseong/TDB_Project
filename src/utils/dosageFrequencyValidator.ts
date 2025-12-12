@@ -1,6 +1,8 @@
 // 복용 횟수별 스케줄 유효성 검사 시스템
-import medicineData from '../assets/medicine.json';
-import tabletData from '../assets/tablet.json';
+// 🔥 JSON 파일 import 제거 (데이터베이스 사용)
+// import medicineData from '../assets/medicine.json';
+// import tabletData from '../assets/tablet.json';
+import { findMedicineMasterByName, findTabletMasterByName } from '../api/medicineMaster';
 
 export interface DosageFrequency {
   dailyCount: number; // 1일 복용 횟수
@@ -20,7 +22,7 @@ export interface ScheduleValidationResult {
 }
 
 export class DosageFrequencyValidator {
-  // 🔥 복용 횟수 추출 정규식 패턴들
+  // 🔥 복용 횟수 추출 정규식 패턴들 (강화)
   private static readonly FREQUENCY_PATTERNS = [
     // 기본 패턴: "1일 3회", "1일 2~3회"
     /1일\s*([1-9])(?:~([1-9]))?\s*회/g,
@@ -28,6 +30,18 @@ export class DosageFrequencyValidator {
     /1일\s*([1-9])(?:~([1-9]))?\s*회/g,
     // 특수 패턴: "첫날 1회 2정 1일 4회"
     /1일\s*([1-9])\s*회/g,
+    // 🔥 추가 패턴: "하루 N회"
+    /하루\s*([1-9])(?:~([1-9]))?\s*회/g,
+    // 🔥 추가 패턴: "N회 복용"
+    /([1-9])(?:~([1-9]))?\s*회\s*복용/g,
+    // 🔥 추가 패턴: "식후 N회"
+    /식후\s*([1-9])(?:~([1-9]))?\s*회/g,
+    // 🔥 추가 패턴: "식전 N회"
+    /식전\s*([1-9])(?:~([1-9]))?\s*회/g,
+    // 🔥 추가 패턴: "매일 N회"
+    /매일\s*([1-9])(?:~([1-9]))?\s*회/g,
+    // 🔥 추가 패턴: "1일 N차례"
+    /1일\s*([1-9])(?:~([1-9]))?\s*차례/g,
   ];
 
   // 🔥 시간대 매핑
@@ -46,29 +60,29 @@ export class DosageFrequencyValidator {
   };
 
   /**
-   * 약물 ID로 복용 횟수 정보를 추출합니다
+   * 약물 ID 또는 이름으로 복용 횟수 정보를 추출합니다 (서버 API 사용)
    */
-  static extractDosageFrequency(medicineId: string): DosageFrequency | null {
-    console.log(`🔥 [DosageFrequencyValidator] 복용 횟수 추출 시작: ${medicineId}`);
+  static async extractDosageFrequency(medicineIdOrName: string): Promise<DosageFrequency | null> {
+    console.log(`🔥 [DosageFrequencyValidator] 복용 횟수 추출 시작: ${medicineIdOrName}`);
     
     try {
-      // 1. medicine.json에서 검색
-      console.log(`🔥 [DosageFrequencyValidator] medicine.json 검색 중...`);
-      const medicineResult = this.searchInMedicineData(medicineId);
+      // 1. 서버 API에서 의약품 검색
+      console.log(`🔥 [DosageFrequencyValidator] 서버 API 의약품 검색 중...`);
+      const medicineResult = await this.searchInMedicineData(medicineIdOrName);
       if (medicineResult) {
-        console.log(`🔥 [DosageFrequencyValidator] medicine.json에서 발견:`, medicineResult);
+        console.log(`🔥 [DosageFrequencyValidator] 서버 API에서 발견:`, medicineResult);
         return medicineResult;
       }
 
-      // 2. tablet.json에서 검색
-      console.log(`🔥 [DosageFrequencyValidator] tablet.json 검색 중...`);
-      const tabletResult = this.searchInTabletData(medicineId);
+      // 2. 서버 API에서 건강기능식품 검색
+      console.log(`🔥 [DosageFrequencyValidator] 서버 API 건강기능식품 검색 중...`);
+      const tabletResult = await this.searchInTabletData(medicineIdOrName);
       if (tabletResult) {
-        console.log(`🔥 [DosageFrequencyValidator] tablet.json에서 발견:`, tabletResult);
+        console.log(`🔥 [DosageFrequencyValidator] 서버 API에서 발견:`, tabletResult);
         return tabletResult;
       }
 
-      console.log(`🔥 [DosageFrequencyValidator] 복용 횟수 정보를 찾을 수 없습니다: ${medicineId}`);
+      console.log(`🔥 [DosageFrequencyValidator] 복용 횟수 정보를 찾을 수 없습니다: ${medicineIdOrName}`);
       return null;
     } catch (error) {
       console.error('🔥 [DosageFrequencyValidator] 복용 횟수 추출 에러:', error);
@@ -77,17 +91,16 @@ export class DosageFrequencyValidator {
   }
 
   /**
-   * medicine.json에서 복용 횟수 정보를 검색합니다
+   * 서버 API에서 의약품 복용 횟수 정보를 검색합니다
    */
-  private static searchInMedicineData(medicineId: string): DosageFrequency | null {
+  private static async searchInMedicineData(medicineIdOrName: string): Promise<DosageFrequency | null> {
     try {
-      const medicines = medicineData as any[];
-      console.log(`🔥 [DosageFrequencyValidator] medicine.json 검색: ${medicineId}`);
-      const medicine = medicines.find((item: any) => item['품목기준코드 [ITEMSEQ]'] === medicineId);
+      console.log(`🔥 [DosageFrequencyValidator] 서버 API 의약품 검색: ${medicineIdOrName}`);
+      const medicine = await findMedicineMasterByName(medicineIdOrName);
       console.log(`🔥 [DosageFrequencyValidator] 검색 결과:`, medicine ? '발견됨' : '없음');
       if (!medicine) return null;
 
-      const usageText = medicine['문항2(사용법) [USEMETHODQESITM] '] || '';
+      const usageText = medicine.intake_method || '';
       const frequency = this.parseFrequencyFromText(usageText);
       
       if (frequency.dailyCount > 0) {
@@ -98,26 +111,22 @@ export class DosageFrequencyValidator {
         };
       }
     } catch (error) {
-      console.error('Medicine.json 검색 에러:', error);
+      console.error('서버 API 의약품 검색 에러:', error);
     }
     return null;
   }
 
   /**
-   * tablet.json에서 복용 횟수 정보를 검색합니다
+   * 서버 API에서 건강기능식품 복용 횟수 정보를 검색합니다
    */
-  private static searchInTabletData(medicineId: string): DosageFrequency | null {
+  private static async searchInTabletData(medicineIdOrName: string): Promise<DosageFrequency | null> {
     try {
-      const tablets = tabletData as any[];
-      console.log(`🔥 [DosageFrequencyValidator] tablet.json 검색: ${medicineId}`);
-      // tablet.json에는 ID 필드가 없어서 제품명으로 검색하거나 별도 로직 필요
-      const tablet = tablets.find((item: any) => 
-        item.PRDLST_NM && item.PRDLST_NM.includes(medicineId.toString())
-      );
-      console.log(`🔥 [DosageFrequencyValidator] tablet.json 검색 결과:`, tablet ? '발견됨' : '없음');
+      console.log(`🔥 [DosageFrequencyValidator] 서버 API 건강기능식품 검색: ${medicineIdOrName}`);
+      const tablet = await findTabletMasterByName(medicineIdOrName);
+      console.log(`🔥 [DosageFrequencyValidator] 검색 결과:`, tablet ? '발견됨' : '없음');
       if (!tablet) return null;
 
-      const methodText = tablet.NTK_MTHD || '';
+      const methodText = tablet.intake_method || '';
       const frequency = this.parseFrequencyFromText(methodText);
       
       if (frequency.dailyCount > 0) {
@@ -128,7 +137,7 @@ export class DosageFrequencyValidator {
         };
       }
     } catch (error) {
-      console.error('Tablet.json 검색 에러:', error);
+      console.error('서버 API 건강기능식품 검색 에러:', error);
     }
     return null;
   }
@@ -211,13 +220,13 @@ export class DosageFrequencyValidator {
   }
 
   /**
-   * 스케줄의 유효성을 검사합니다
+   * 스케줄의 유효성을 검사합니다 (서버 API 사용)
    */
-  static validateSchedule(
+  static async validateSchedule(
     medicineId: string,
     schedule: Record<string, Record<string, boolean>>
-  ): ScheduleValidationResult {
-    const dosageInfo = this.extractDosageFrequency(medicineId);
+  ): Promise<ScheduleValidationResult> {
+    const dosageInfo = await this.extractDosageFrequency(medicineId);
     
     if (!dosageInfo) {
       return {
@@ -310,18 +319,18 @@ export class DosageFrequencyValidator {
   }
 
   /**
-   * 특정 요일의 특정 시간대 선택 가능 여부를 확인합니다
+   * 특정 요일의 특정 시간대 선택 가능 여부를 확인합니다 (서버 API 사용)
    */
-  static canSelectTimeSlot(
+  static async canSelectTimeSlot(
     medicineId: string,
     schedule: Record<string, Record<string, boolean>>,
     day: string,
     timeSlot: string
-  ): boolean {
+  ): Promise<boolean> {
     console.log('🔥 [DosageFrequencyValidator] canSelectTimeSlot 시작:', { medicineId, day, timeSlot });
     console.log('🔥 [DosageFrequencyValidator] 전체 스케줄:', schedule);
     
-    const dosageInfo = this.extractDosageFrequency(medicineId);
+    const dosageInfo = await this.extractDosageFrequency(medicineId);
     console.log('🔥 [DosageFrequencyValidator] 추출된 복용량 정보:', dosageInfo);
     
     if (!dosageInfo) {
@@ -349,10 +358,10 @@ export class DosageFrequencyValidator {
   }
 
   /**
-   * 약물 정보에 기반한 권장 스케줄을 생성합니다
+   * 약물 정보에 기반한 권장 스케줄을 생성합니다 (서버 API 사용)
    */
-  static generateRecommendedSchedule(medicineId: string): Record<string, Record<string, boolean>> {
-    const dosageInfo = this.extractDosageFrequency(medicineId);
+  static async generateRecommendedSchedule(medicineId: string): Promise<Record<string, Record<string, boolean>>> {
+    const dosageInfo = await this.extractDosageFrequency(medicineId);
     const schedule: Record<string, Record<string, boolean>> = {};
 
     // 기본 스케줄 초기화

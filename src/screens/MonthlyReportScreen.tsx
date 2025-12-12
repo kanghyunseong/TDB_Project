@@ -4,12 +4,12 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   Dimensions,
   Alert,
-} from 'react-native';
+  StatusBar} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../types/navigation';
@@ -47,6 +47,7 @@ const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
   navigation, 
   route 
 }) => {
+  const insets = useSafeAreaInsets();
   const { colors: themeColors, isDark } = useTheme();
   const [monthlyStats, setMonthlyStats] = useState<MonthlyStats[]>([]);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
@@ -337,7 +338,8 @@ const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
 
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.PRIMARY.DEFAULT} />
           <Text style={[styles.loadingText, { color: themeColors.text }]}>
@@ -349,9 +351,10 @@ const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
       {/* 헤더 */}
-      <View style={[styles.header, { backgroundColor: themeColors.card }]}>
+      <View style={[styles.header, { backgroundColor: themeColors.card, paddingTop: insets.top + 10 }]}>
         <TouchableOpacity 
           style={styles.backButton}
           onPress={() => navigation.goBack()}

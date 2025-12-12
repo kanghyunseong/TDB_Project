@@ -9,7 +9,11 @@
     "start": "react-native start",
     "test": "jest",
     "clean-data": "node scripts/cleanJsonData.js",
-    "analyze-data": "node -e \"const { analyzePatterns } = require('./scripts/cleanJsonData.js'); analyzePatterns('./src/assets/tablet.json'); analyzePatterns('./src/assets/medicine.json');\""
+    "analyze-data": "node -e \"const { analyzePatterns } = require('./scripts/cleanJsonData.js'); analyzePatterns('./src/assets/tablet.json'); analyzePatterns('./src/assets/medicine.json');\"",
+    "update-tablet": "python3 scripts/fetch_tablet_data.py",
+    "update-medicine": "python3 scripts/fetch_medicine_data.py",
+    "update-all": "python3 scripts/fetch_tablet_data.py && python3 scripts/fetch_medicine_data.py",
+    "update-and-clean": "npm run update-all && npm run clean-data"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.2",

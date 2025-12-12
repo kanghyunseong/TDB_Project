@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Alert, StatusBar, TextInput, Modal } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import QRCodeScanner from 'react-native-qrcode-scanner';
 import { RNCamera } from 'react-native-camera';
 import colors from '../constants/colors';
@@ -24,6 +25,7 @@ interface QRData {
 }
 
 const QRScannerScreen = () => {
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<MainStackParamList>>();
   const route = useRoute<RouteProp<{ params: QRScannerScreenParams }, 'params'>>();
   const [scanned, setScanned] = useState(false);
@@ -197,12 +199,25 @@ const QRScannerScreen = () => {
       }
 
       // 🔥 등록 성공 시 AsyncStorage 업데이트
+      // 서버 응답에서 machine_id 추출 (디스펜서의 경우)
+      let finalMachineId = uid;
+      if (scanType === 'dispenser' && result.data) {
+        // 서버 응답 타입 확인 (machine 속성이 있는 경우)
+        const responseData = result.data as any;
+        if (responseData.machine?.machine_id) {
+          finalMachineId = responseData.machine.machine_id;
+          console.log('[QRScanner] 서버에서 반환된 machine_id:', finalMachineId);
+        }
+      }
+      
       const updatedUser = {
         ...user,
-        [scanType === 'dispenser' ? 'machine_id' : 'k_uid']: uid
+        [scanType === 'dispenser' ? 'machine_id' : 'k_uid']: finalMachineId
       };
       await AsyncStorage.setItem('@user', JSON.stringify(updatedUser));
-      console.log('[QRScanner] ✅ 새 기기 등록 완료 및 AsyncStorage 업데이트');
+      console.log('[QRScanner] ✅ 새 기기 등록 완료 및 AsyncStorage 업데이트:', {
+        [scanType === 'dispenser' ? 'machine_id' : 'k_uid']: finalMachineId
+      });
 
       Toast.show({
         type: 'success',
@@ -247,7 +262,12 @@ const QRScannerScreen = () => {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar 
+        barStyle="light-content" 
+        backgroundColor="transparent"
+        translucent={true}
+        hidden={false}
+      />
       <QRCodeScanner
         onRead={handleScan}
         flashMode={RNCamera.Constants.FlashMode.auto}
@@ -255,7 +275,7 @@ const QRScannerScreen = () => {
         reactivate={true}
         reactivateTimeout={2000}
         topContent={
-          <View style={styles.header}>
+          <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
             <Text style={styles.title}>
               {scanType === 'dispenser' ? '디스펜서' : '데일리 키트'} QR 코드를 스캔해주세요
             </Text>

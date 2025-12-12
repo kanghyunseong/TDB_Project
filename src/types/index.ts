@@ -75,6 +75,8 @@ export interface ApiResponse<T> {
     statusCode?: number;
   };
   isNotFound?: boolean;
+  isEmpty?: boolean; // 🔥 404로 인한 빈 결과임을 명시
+  message?: string; // 🔥 추가 메시지 (선택적)
 }
 
 // 메인 타입 정의들을 tdb.ts에서 가져옴

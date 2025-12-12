@@ -4,10 +4,10 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../types/navigation';
@@ -38,7 +38,7 @@ const DoseTimeSettingScreen: React.FC<DoseTimeSettingScreenProps> = ({
   const { colors: themeColors, isDark } = useTheme();
   const [doseSettings, setDoseSettings] = useState<DoseTimeSettings>({
     morning: '08:00',
-    afternoon: '13:00',
+    afternoon: '12:00',
     evening: '19:00'
   });
   
@@ -150,7 +150,7 @@ const DoseTimeSettingScreen: React.FC<DoseTimeSettingScreenProps> = ({
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
       {/* 헤더 */}
       <View style={[styles.header, { backgroundColor: themeColors.card }]}>
         <TouchableOpacity 

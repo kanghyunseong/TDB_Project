@@ -10,12 +10,13 @@ import {
 } from 'react-native';
 import Feather from 'react-native-vector-icons/Feather';
 import colors from '../constants/colors';
-import { Medicine, FamilyMember } from '../types/tdb';
+import { Medicine, FamilyMember, NutritionalSupplement } from '../types/tdb';
 
 interface TodayScheduleDisplayModalProps {
   visible: boolean;
   onClose: () => void;
   medicineList: Medicine[];
+  supplementList: NutritionalSupplement[];
   selectedMember: FamilyMember | null;
   dailySchedules: Record<string, any>;
   userType: 'parent' | 'child' | null;
@@ -26,6 +27,7 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
   visible,
   onClose,
   medicineList,
+  supplementList,
   selectedMember,
   dailySchedules,
   userType,
@@ -49,7 +51,7 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
 
   const getTodayMedicines = () => {
     const todayMedicines: Array<{
-      medicine: Medicine;
+      medicine: Medicine | NutritionalSupplement;
       userName: string;
       userId: string;
       schedule: {
@@ -58,11 +60,12 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
         evening: number;
         total: number;
       };
+      type: 'medicine' | 'supplement';
     }> = [];
 
-    console.log(`🔍 [TodayScheduleDisplayModal] 약물 필터링 시작: ${medicineList.length}개 약물`);
+    console.log(`🔍 [TodayScheduleDisplayModal] 약물 필터링 시작: ${medicineList.length}개 약물, ${supplementList.length}개 영양제`);
 
-    // 🔥 자식 계정을 위한 권한 필터링
+    // 🔥 자식 계정을 위한 권한 필터링 (약물)
     const accessibleMedicines = medicineList.filter(medicine => {
       const permission = (medicine as any).permission;
       
@@ -79,7 +82,24 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
       }
     });
 
-    console.log(`🔍 [TodayScheduleDisplayModal] 접근 가능한 약물: ${accessibleMedicines.length}개`);
+    // 🔥 자식 계정을 위한 권한 필터링 (영양제)
+    const accessibleSupplements = supplementList.filter(supplement => {
+      const permission = (supplement as any).permission;
+      
+      console.log(`🔍 [TodayScheduleDisplayModal] ${supplement.name} 권한 검사:`, {
+        permission,
+        userType,
+        target_users: supplement.target_users
+      });
+      
+      if (userType === 'parent') {
+        return true; // 부모는 모든 영양제 접근 가능
+      } else {
+        return permission === 'own' || permission === 'common'; // 자식은 본인 영양제와 공통 영양제만
+      }
+    });
+
+    console.log(`🔍 [TodayScheduleDisplayModal] 접근 가능한 약물: ${accessibleMedicines.length}개, 영양제: ${accessibleSupplements.length}개`);
 
     accessibleMedicines.forEach((medicine) => {
       // 🔥 공통 약물인 경우
@@ -132,6 +152,7 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
                 userName: member.name,
                 userId: member.user_id,
                 schedule: todayDoses,
+                type: 'medicine',
               });
             }
           }
@@ -184,13 +205,73 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
               userName: targetMember?.name || '알 수 없음',
               userId: targetUserId,
               schedule: todayDoses,
+              type: 'medicine',
             });
           }
         }
       }
     });
 
-    console.log(`🔍 [TodayScheduleDisplayModal] 최종 오늘 복용 약물: ${todayMedicines.length}개`);
+    // 🔥 영양제 처리
+    accessibleSupplements.forEach((supplement) => {
+      // 영양제는 항상 개인 약물로 처리 (target_users 사용)
+      const targetUserId = supplement.target_users?.[0];
+      if (!targetUserId) {
+        console.log(`⚠️ [TodayScheduleDisplayModal] ${supplement.name} 영양제에 target_users가 없습니다`);
+        return;
+      }
+
+      const targetMember = familyMembers.find(m => m.user_id === targetUserId);
+
+      // 자식 계정인데 자기 영양제가 아니면 스킵
+      if (userType === 'child' && targetUserId !== selectedMember?.user_id) {
+        return;
+      }
+
+      const scheduleKey = `${supplement.id}_${targetUserId}`;
+      const dailySchedule = dailySchedules[scheduleKey];
+
+      console.log(`🔍 [TodayScheduleDisplayModal] ${supplement.name} - ${targetMember?.name} (영양제) 스케줄 확인:`, {
+        scheduleKey,
+        hasSchedule: !!dailySchedule
+      });
+
+      if (dailySchedule) {
+        const dayScheduleKey = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][dayOfWeek];
+        
+        let todayDoses = {
+          morning: dailySchedule.morning || 0,
+          afternoon: dailySchedule.afternoon || 0,
+          evening: dailySchedule.evening || 0,
+          total: 0,
+        };
+
+        // 요일별 스케줄이 있는 경우
+        if (dailySchedule.weeklySchedule && dailySchedule.weeklySchedule[dayScheduleKey]) {
+          const weeklySchedule = dailySchedule.weeklySchedule[dayScheduleKey];
+          todayDoses = {
+            morning: weeklySchedule.morning ? (parseInt(weeklySchedule.morningDose?.toString()) || 1) : 0,
+            afternoon: weeklySchedule.afternoon ? (parseInt(weeklySchedule.afternoonDose?.toString()) || 1) : 0,
+            evening: weeklySchedule.evening ? (parseInt(weeklySchedule.eveningDose?.toString()) || 1) : 0,
+            total: 0,
+          };
+        }
+
+        todayDoses.total = todayDoses.morning + todayDoses.afternoon + todayDoses.evening;
+
+        if (todayDoses.total > 0) {
+          todayMedicines.push({
+            medicine: supplement,
+            userName: targetMember?.name || '알 수 없음',
+            userId: targetUserId,
+            schedule: todayDoses,
+            type: 'supplement',
+          });
+        }
+      }
+    });
+
+    console.log(`🔍 [TodayScheduleDisplayModal] 최종 오늘 복용 약물/영양제: ${todayMedicines.length}개`);
     return todayMedicines;
   };
 
@@ -231,18 +312,37 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
         {/* 스케줄 목록 */}
         <ScrollView style={styles.content}>
           {todayMedicines.length > 0 ? (
-            todayMedicines.map((item, index) => (
-              <View key={`${item.medicine.medi_id}_${item.userId}_${index}`} style={styles.medicineCard}>
-                <View style={styles.medicineHeader}>
-                  <View style={styles.medicineNameContainer}>
-                    <Text style={styles.medicineName}>{item.medicine.name}</Text>
-                    {/* 🔥 사용자 이름 표시 */}
-                    <Text style={styles.medicineOwner}>
-                      {isCommonMedicine(item.medicine) ? `👥 ${item.userName}` : `👤 ${item.userName}`}
+            todayMedicines.map((item, index) => {
+              const itemId = item.type === 'supplement' 
+                ? (item.medicine as NutritionalSupplement).id 
+                : (item.medicine as Medicine).medi_id;
+              
+              return (
+                <View key={`${itemId}_${item.userId}_${index}`} style={styles.medicineCard}>
+                  <View style={styles.medicineHeader}>
+                    <View style={styles.medicineNameContainer}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.medicineName}>{item.medicine.name}</Text>
+                        {/* 🔥 영양제/약물 구분 표시 */}
+                        {item.type === 'supplement' && (
+                          <View style={styles.supplementBadge}>
+                            <Text style={styles.supplementBadgeText}>영양제</Text>
+                          </View>
+                        )}
+                      </View>
+                      {/* 🔥 사용자 이름 표시 */}
+                      <Text style={styles.medicineOwner}>
+                        {item.type === 'medicine' && isCommonMedicine(item.medicine as Medicine) 
+                          ? `👥 ${item.userName}` 
+                          : `👤 ${item.userName}`}
+                      </Text>
+                    </View>
+                    <Text style={styles.medicineSlot}>
+                      {item.type === 'supplement' 
+                        ? `슬롯 ${(item.medicine as NutritionalSupplement).slot}번`
+                        : `슬롯 ${(item.medicine as Medicine).slot}번`}
                     </Text>
                   </View>
-                  <Text style={styles.medicineSlot}>슬롯 {item.medicine.slot}번</Text>
-                </View>
                 
                 <View style={styles.scheduleDetails}>
                   {(['morning', 'afternoon', 'evening'] as const).map((timeOfDay) => {
@@ -265,7 +365,8 @@ const TodayScheduleDisplayModal: React.FC<TodayScheduleDisplayModalProps> = ({
                   </Text>
                 </View>
               </View>
-            ))
+              );
+            })
           ) : (
             <View style={styles.emptyState}>
               <Feather name="calendar" size={64} color="#ccc" />
@@ -370,6 +471,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.PRIMARY.DEFAULT,
     fontWeight: '500',
+  },
+  supplementBadge: {
+    backgroundColor: colors.SUCCESS.DEFAULT,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  supplementBadgeText: {
+    fontSize: 10,
+    color: 'white',
+    fontWeight: '600',
   },
   scheduleDetails: {
     flexDirection: 'row',

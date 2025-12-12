@@ -62,6 +62,7 @@ const SUPPLEMENT_AGE_RESTRICTIONS: SupplementAgeRestriction = {
   },
   
   // 오메가-3
+  
   'omega3': {
     minAge: 6,
     warningAge: 12,
@@ -103,12 +104,150 @@ const SUPPLEMENT_AGE_RESTRICTIONS: SupplementAgeRestriction = {
     specialNotes: ['혈압, 혈당에 영향 가능'],
     recommendedAge: 240 // 20세
   },
+  '홍삼': {
+    minAge: 144, // 12세
+    warningAge: 192, // 16세
+    restrictions: ['12세 미만 금지'],
+    specialNotes: ['혈압, 혈당에 영향 가능'],
+    recommendedAge: 240
+  },
+  '인삼': {
+    minAge: 144, // 12세
+    warningAge: 192, // 16세
+    restrictions: ['12세 미만 금지'],
+    specialNotes: ['혈압, 혈당에 영향 가능'],
+    recommendedAge: 240
+  },
   'echinacea': {
     minAge: 24,
     warningAge: 36,
     restrictions: ['2세 미만 금지'],
     specialNotes: ['알레르기 반응 주의'],
     recommendedAge: 48
+  },
+  '은행잎': {
+    minAge: 48, // 4세
+    warningAge: 72, // 6세
+    restrictions: ['4세 미만 금지'],
+    specialNotes: ['인지 기능 개선에 도움', '과다 복용 주의'],
+    recommendedAge: 120 // 10세
+  },
+  '밀크씨슬': {
+    minAge: 36, // 3세
+    warningAge: 60, // 5세
+    restrictions: ['3세 미만 금지'],
+    specialNotes: ['간 기능 보호', '알레르기 반응 주의'],
+    recommendedAge: 120
+  },
+  '실리마린': {
+    minAge: 36, // 3세
+    warningAge: 60, // 5세
+    restrictions: ['3세 미만 금지'],
+    specialNotes: ['간 기능 보호', '알레르기 반응 주의'],
+    recommendedAge: 120
+  },
+  
+  // 콜라겐
+  'collagen': {
+    minAge: 24, // 2세
+    warningAge: 48, // 4세
+    restrictions: ['2세 미만 금지'],
+    specialNotes: ['관절 건강, 피부 건강에 도움'],
+    recommendedAge: 180 // 15세
+  },
+  '콜라겐': {
+    minAge: 24, // 2세
+    warningAge: 48, // 4세
+    restrictions: ['2세 미만 금지'],
+    specialNotes: ['관절 건강, 피부 건강에 도움'],
+    recommendedAge: 180
+  },
+  
+  // 글루코사민
+  'glucosamine': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['관절 건강에 도움', '갑각류 알레르기 주의'],
+    recommendedAge: 240 // 20세
+  },
+  '글루코사민': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['관절 건강에 도움', '갑각류 알레르기 주의'],
+    recommendedAge: 240
+  },
+  
+  // 코엔자임 Q10
+  'coenzyme': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['심혈관 건강, 항산화 효과'],
+    recommendedAge: 240
+  },
+  '코엔자임': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['심혈관 건강, 항산화 효과'],
+    recommendedAge: 240
+  },
+  '유비퀴논': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['심혈관 건강, 항산화 효과'],
+    recommendedAge: 240
+  },
+  '코큐텐': {
+    minAge: 120, // 10세
+    warningAge: 180, // 15세
+    restrictions: ['10세 미만 금지'],
+    specialNotes: ['심혈관 건강, 항산화 효과'],
+    recommendedAge: 240
+  },
+  
+  // 루테인
+  'lutein': {
+    minAge: 24, // 2세
+    warningAge: 48, // 4세
+    restrictions: ['2세 미만 금지'],
+    specialNotes: ['눈 건강에 도움', '과다 복용 주의'],
+    recommendedAge: 120 // 10세
+  },
+  '루테인': {
+    minAge: 24, // 2세
+    warningAge: 48, // 4세
+    restrictions: ['2세 미만 금지'],
+    specialNotes: ['눈 건강에 도움', '과다 복용 주의'],
+    recommendedAge: 120
+  },
+  
+  // 마그네슘
+  'magnesium': {
+    minAge: 6,
+    warningAge: 12,
+    restrictions: ['6개월 미만 금지'],
+    specialNotes: ['근육 기능, 신경 기능에 중요', '과다 복용 시 설사 위험'],
+    recommendedAge: 24
+  },
+  '마그네슘': {
+    minAge: 6,
+    warningAge: 12,
+    restrictions: ['6개월 미만 금지'],
+    specialNotes: ['근육 기능, 신경 기능에 중요', '과다 복용 시 설사 위험'],
+    recommendedAge: 24
+  },
+  
+  // 유산균 (프로바이오틱스와 유사하지만 별도 처리)
+  '유산균': {
+    minAge: 3,
+    warningAge: 6,
+    restrictions: ['3개월 미만 금지'],
+    specialNotes: ['면역력 강화, 장 건강에 도움'],
+    recommendedAge: 6
   }
 };
 
@@ -183,12 +322,49 @@ export const validateSupplementForAge = (
   // 특정 영양제별 연령 제한 확인
   if (supplementInfo?.name) {
     const supplementName = supplementInfo.name.toLowerCase();
+    const primaryFunction = (supplementInfo.primary_function || '').toLowerCase();
+    const rawMaterials = (supplementInfo.raw_materials || supplementInfo.RAWMTRL_NM || '').toLowerCase();
+    const combinedText = `${supplementName} ${primaryFunction} ${rawMaterials}`;
     
-    // 영양제명에서 주요 성분 찾기
+    // 영양제명에서 주요 성분 찾기 (더 포괄적인 검색)
     for (const [ingredient, restriction] of Object.entries(SUPPLEMENT_AGE_RESTRICTIONS)) {
-      if (supplementName.includes(ingredient) || 
-          supplementName.includes(ingredient.replace(/_/g, '')) ||
-          supplementName.includes(ingredient.replace(/_/g, ' '))) {
+      const ingredientLower = ingredient.toLowerCase();
+      const ingredientVariations = [
+        ingredientLower,
+        ingredientLower.replace(/_/g, ''),
+        ingredientLower.replace(/_/g, ' '),
+        ingredientLower.replace(/_/g, '-'),
+      ];
+      
+      // 한글 키워드도 추가로 검색
+      const koreanKeywords: Record<string, string[]> = {
+        'vitamin_d': ['비타민d', '비타민 디', '비타민디'],
+        'vitamin_c': ['비타민c', '비타민 씨', '비타민씨'],
+        'multivitamin': ['종합비타민', '멀티비타민'],
+        'iron': ['철', '철분'],
+        'calcium': ['칼슘', '칼슘제'],
+        'zinc': ['아연', '아연제'],
+        'omega3': ['오메가3', '오메가-3', '오메가삼'],
+        'dha': ['디에이치에이', 'dha'],
+        'probiotics': ['프로바이오틱스', '유산균'],
+        'protein': ['단백질', '프로틴'],
+        'collagen': ['콜라겐'],
+        'glucosamine': ['글루코사민'],
+        'coenzyme': ['코엔자임', '코큐텐', '유비퀴논'],
+        'lutein': ['루테인'],
+        'magnesium': ['마그네슘'],
+      };
+      
+      const allKeywords = [...ingredientVariations];
+      if (koreanKeywords[ingredient]) {
+        allKeywords.push(...koreanKeywords[ingredient]);
+      }
+      
+      const found = allKeywords.some(keyword => 
+        combinedText.includes(keyword)
+      );
+      
+      if (found) {
         
         // 최소 연령 확인 (개월 단위)
         if (ageInMonths < restriction.minAge) {

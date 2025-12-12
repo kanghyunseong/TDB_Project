@@ -11,15 +11,15 @@ export interface ScheduleData {
 
 export class ScheduleValidationHelper {
   /**
-   * 스케줄 편집 시 실시간 유효성 검사
+   * 스케줄 편집 시 실시간 유효성 검사 (서버 API 사용)
    */
-  static validateScheduleEdit(
+  static async validateScheduleEdit(
     medicineId: string,
     medicineName: string,
     schedule: ScheduleData,
     onValidationResult?: (isValid: boolean, message?: string) => void
-  ): boolean {
-    const validation = DosageFrequencyValidator.validateSchedule(medicineId, schedule);
+  ): Promise<boolean> {
+    const validation = await DosageFrequencyValidator.validateSchedule(medicineId, schedule);
     
     if (onValidationResult) {
       onValidationResult(validation.isValid, validation.warningMessage);
@@ -29,18 +29,18 @@ export class ScheduleValidationHelper {
   }
 
   /**
-   * 특정 시간대 체크박스 클릭 시 검증
+   * 특정 시간대 체크박스 클릭 시 검증 (서버 API 사용)
    */
-  static canToggleTimeSlot(
+  static async canToggleTimeSlot(
     medicineId: string,
     schedule: ScheduleData,
     day: string,
     timeSlot: string,
     showAlert: boolean = true
-  ): boolean {
+  ): Promise<boolean> {
     console.log('🔥 [ScheduleValidationHelper] canToggleTimeSlot 시작:', { medicineId, day, timeSlot });
     
-    const canSelect = DosageFrequencyValidator.canSelectTimeSlot(
+    const canSelect = await DosageFrequencyValidator.canSelectTimeSlot(
       medicineId,
       schedule,
       day,
@@ -51,7 +51,7 @@ export class ScheduleValidationHelper {
 
     if (!canSelect && showAlert) {
       console.log('🔥 [ScheduleValidationHelper] 선택 제한 Alert 표시');
-      const dosageInfo = DosageFrequencyValidator.extractDosageFrequency(medicineId);
+      const dosageInfo = await DosageFrequencyValidator.extractDosageFrequency(medicineId);
       console.log('🔥 [ScheduleValidationHelper] 복용량 정보:', dosageInfo);
       const maxCount = dosageInfo?.dailyCount || 3;
       
@@ -66,15 +66,15 @@ export class ScheduleValidationHelper {
   }
 
   /**
-   * 스케줄 저장 전 최종 검증
+   * 스케줄 저장 전 최종 검증 (서버 API 사용)
    */
-  static validateBeforeSave(
+  static async validateBeforeSave(
     medicineId: string,
     medicineName: string,
     schedule: ScheduleData
   ): Promise<boolean> {
-    return new Promise((resolve) => {
-      const validation = DosageFrequencyValidator.validateSchedule(medicineId, schedule);
+    return new Promise(async (resolve) => {
+      const validation = await DosageFrequencyValidator.validateSchedule(medicineId, schedule);
       
       if (validation.isValid) {
         resolve(true);
@@ -102,10 +102,10 @@ export class ScheduleValidationHelper {
   }
 
   /**
-   * 권장 스케줄 제안
+   * 권장 스케줄 제안 (서버 API 사용)
    */
-  static suggestOptimalSchedule(medicineId: string): ScheduleData {
-    const recommended = DosageFrequencyValidator.generateRecommendedSchedule(medicineId);
+  static async suggestOptimalSchedule(medicineId: string): Promise<ScheduleData> {
+    const recommended = await DosageFrequencyValidator.generateRecommendedSchedule(medicineId);
     
     // Record<string, Record<string, boolean>>을 ScheduleData 타입으로 변환
     const schedule: ScheduleData = {};
@@ -121,10 +121,10 @@ export class ScheduleValidationHelper {
   }
 
   /**
-   * 복용 정보 요약 메시지 생성
+   * 복용 정보 요약 메시지 생성 (서버 API 사용)
    */
-  static getDosageInfoMessage(medicineId: string): string {
-    const dosageInfo = DosageFrequencyValidator.extractDosageFrequency(medicineId);
+  static async getDosageInfoMessage(medicineId: string): Promise<string> {
+    const dosageInfo = await DosageFrequencyValidator.extractDosageFrequency(medicineId);
     
     if (!dosageInfo) {
       return '복용 횟수 정보를 확인할 수 없습니다.';

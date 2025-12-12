@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, TouchableOpacity, Image, Animated } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Image, Animated } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import colors from '../../constants/colors';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -34,7 +35,7 @@ const AuthHomeScreen = () => {
   }, []);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.content}>
         <Text style={styles.title}>TEDDY BEAR</Text>
         <Text style={styles.subtitle}>약 먹을 시간이에요!</Text>

@@ -6,55 +6,59 @@ import { apiClient } from './client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getToken } from './auth';
 import { getCurrentUser } from './userStorage';
-import medicineDataRaw from '../assets/medicine.json';
+// 🔥 JSON 파일 import 제거 (데이터베이스 사용)
+// import medicineDataRaw from '../assets/medicine.json';
 
 // 타입 export (다른 파일에서 사용하기 위해)
 export type { Medicine, MedicineSearchResult, MedicineDetail, MedicineSchedule } from '../types/tdb';
 
-// medicine.json 데이터를 배열로 캐스팅
-const medicineData: any[] = medicineDataRaw as any[];
+// 🔥 JSON 데이터는 더 이상 사용하지 않음 (데이터베이스 사용)
+// const medicineData: any[] = medicineDataRaw as any[];
 
 /**
- * 로컬 JSON 파일을 통한 의약품 검색
+ * 데이터베이스 기반 의약품 검색 (서버 API 사용)
  */
 export const searchMedicineByName = async (itemName: string): Promise<MedicineSearchResult[]> => {
   try {
-    console.log(`🔍 [searchMedicineByName] 의약품 검색 시작: ${itemName}`);
+    console.log(`🔍 [searchMedicineByName] 의약품 검색 시작 (DB): ${itemName}`);
     
-    if (!Array.isArray(medicineData)) {
-      console.error('🔥 [searchMedicineByName] medicine.json 데이터가 올바르지 않습니다.');
+    if (!itemName || itemName.trim().length === 0) {
       return [];
     }
 
-    // 대소문자 구분 없이 부분 일치로 검색
-    const searchTerm = itemName.toLowerCase();
-    const filteredResults = medicineData.filter((item: any) => {
-      const medicineName = item['제품명 [ITEMNAME] '] || '';
-      return medicineName.toLowerCase().includes(searchTerm);
-    });
+    // 서버 API 호출
+    const response = await apiClient.get<ApiResponse<any[]>>(
+      `${API_ENDPOINTS.MEDICINE.MASTER_SEARCH}?query=${encodeURIComponent(itemName.trim())}&limit=20`
+    );
 
-    console.log(`✅ [searchMedicineByName] 검색 완료: ${filteredResults.length}개 결과`);
+    if (!response.data?.success || !response.data?.data) {
+      console.warn('⚠️ [searchMedicineByName] 서버 응답이 올바르지 않습니다.');
+      return [];
+    }
 
-    // 최대 20개 결과만 반환
-    const limitedResults = filteredResults.slice(0, 20);
+    const results = response.data.data;
+    console.log(`✅ [searchMedicineByName] 검색 완료 (DB): ${results.length}개 결과`);
 
-    return limitedResults.map((item: any) => ({
-      itemSeq: item['품목일련번호 [ITEMSEQ] '] || '',
-      itemName: item['제품명 [ITEMNAME] '] || '',
-      entpName: item['업체명 [ENTPNAME] '] || '',
-      efcyQesitm: item['문항1(효능효과) [EFCYQESITM] '] || '',
-      useMethodQesitm: item['문항2(사용법) [USEMETHODQESITM] '] || '',
-      atpnWarnQesitm: item['문항3(주의사항경고) [ATPNWARNQESITM] '] || '',
-      atpnQesitm: item['문항4(주의사항) [ATPNQESITM] '] || '',
-      intrcQesitm: item['문항5(상호작용) [INTRCQESITM] '] || '',
-      seQesitm: item['문항6(부작용) [SEQESITM] '] || '',
-      depositMethodQesitm: item['문항7(보관법) [DEPOSITMETHODQESITM] '] || '',
-      packUnit: item['포장단위 [PACKUNIT] '] || '',
-      warning: 0, // 서버와 일치: tinyint (기본값 0)
-      medi_id: item['품목일련번호 [ITEMSEQ] '] || ''
+    // 서버 응답을 MedicineSearchResult 형식으로 변환
+    return results.map((item: any) => ({
+      itemSeq: item.report_no || '',
+      itemName: item.name || '',
+      entpName: item.company_name || '',
+      efcyQesitm: item.primary_function || '',
+      useMethodQesitm: item.intake_method || '',
+      atpnWarnQesitm: item.precautions || '',
+      atpnQesitm: item.precautions || '',
+      intrcQesitm: '',
+      seQesitm: '',
+      depositMethodQesitm: item.storage_method || '',
+      packUnit: '',
+      warning: 0,
+      medi_id: item.report_no || ''
     }));
   } catch (error: any) {
     console.error('🔥 [searchMedicineByName] 의약품 검색 실패:', error);
+    
+    // 에러 발생 시 빈 배열 반환 (기존 동작 유지)
     return [];
   }
 };
@@ -197,9 +201,22 @@ export const saveMedicine = async (
     return response.data;
   } catch (error: any) {
     console.error('약물 저장 에러:', error);
+    
+    // 🔥 네트워크 오류 상세 로깅
+    if (error.code === 'NETWORK_ERROR' || error.message === 'Network Error' || !error.response) {
+      console.error('🚨 네트워크 연결 오류:', {
+        endpoint: `${API_URL}${API_ENDPOINTS.MEDICINE.ADD}`,
+        message: error.message,
+        code: error.code,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     return {
       success: false,
-      error: { message: error?.response?.data?.message || error?.message || '약물 저장에 실패했습니다.' }
+      error: { 
+        message: error?.response?.data?.message || error?.message || '네트워크 오류가 발생했습니다. 서버 연결을 확인해주세요.' 
+      }
     };
   }
 };
@@ -304,6 +321,30 @@ export const saveMedicineScheduleV3 = async (
     return response.data;
   } catch (error: any) {
     console.error('🔥 [API V3] 매트릭스 스케줄 저장 에러:', error);
+    
+    // 🔥 연령 제한 에러 처리
+    if (error?.response?.data?.error === 'AGE_RESTRICTION') {
+      return {
+        success: false,
+        error: {
+          code: 'AGE_RESTRICTION',
+          message: error.response.data.message || '이 연령대에는 복용이 금지된 약물입니다.',
+          warnings: error.response.data.warnings || []
+        }
+      };
+    }
+    
+    // 🔥 권한 에러 처리
+    if (error?.response?.status === 403 || error?.response?.data?.statusCode === 403) {
+      return {
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: error.response.data.message || '이 약물의 스케줄을 등록할 권한이 없습니다.'
+        }
+      };
+    }
+    
     return {
       success: false,
       error: { message: error?.response?.data?.message || error?.message || '스케줄 저장에 실패했습니다.' }
@@ -431,7 +472,9 @@ export const getMedicineSchedule = async (
       console.log(`📝 스케줄이 없는 약입니다: medicineId=${medicineId}, memberId=${memberId}`);
       return {
         success: true,
-        data: [] // 빈 배열 반환
+        data: [], // 빈 배열 반환
+        isEmpty: true, // 🔥 빈 결과임을 명시
+        message: '등록된 스케줄이 없습니다.'
       };
     }
     

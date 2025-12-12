@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import colors from '../constants/colors';
-import { useNavigation, CommonActions } from '@react-navigation/native';
+import { useNavigation, CommonActions, useFocusEffect } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -28,7 +28,8 @@ import QRScanner from '../components/QRScanner';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import Feather from 'react-native-vector-icons/Feather';
 import { API_URL, API_ENDPOINTS } from '../constants/api';
-import { getCurrentUser } from '../api/userStorage';
+import { getCurrentUser, syncUserWithServer } from '../api/userStorage';
+import { verifyAuth } from '../api/auth';
 
 type MainBottomTabParamList = {
   Home: undefined;
@@ -61,18 +62,58 @@ const SettingsScreen = () => {
     loadUserInfo();
   }, []);
 
+  // 🔥 화면 포커스 시 사용자 정보 확인 및 동기화
+  useFocusEffect(
+    useCallback(() => {
+      console.log('📱 [SettingsScreen] 화면 포커스 - 사용자 정보 확인');
+      loadUserInfo();
+    }, [])
+  );
+
   const loadUserInfo = async () => {
     setIsLoading(true);
     try {
+      // 🔥 로컬 스토리지에서 먼저 사용자 정보 가져오기
       const currentUser = await getCurrentUser();
-      console.log('현재 사용자 정보:', currentUser);
-      setUser(currentUser as any);
-
+      console.log('현재 사용자 정보 (로컬):', currentUser);
+      
       if (!currentUser) {
         setDebugInfo('사용자 정보 없음');
-      } else {
-        setDebugInfo(`연결됨: ${currentUser.user_id || '알 수 없음'}`);
+        setUser(null);
+        return;
       }
+      
+      setUser(currentUser as any);
+      setDebugInfo(`연결됨: ${currentUser.user_id || '알 수 없음'}`);
+      
+      // 🔥 먼저 인증 상태 확인
+      try {
+        const authResult = await verifyAuth();
+        if (!authResult.success) {
+          console.warn('⚠️ 인증 상태 확인 실패:', authResult.error?.message);
+          // 인증 실패 시에도 로컬 데이터는 유지
+        } else {
+          console.log('✅ 인증 상태 확인 성공');
+        }
+      } catch (authError) {
+        console.error('❌ 인증 확인 중 에러:', authError);
+      }
+
+      // 🔥 서버에서 최신 사용자 정보 가져와서 동기화
+      try {
+        const syncedUser = await syncUserWithServer(currentUser.user_id);
+        if (syncedUser && syncedUser.name) {
+          setUser(syncedUser as any);
+          console.log('✅ 사용자 정보 동기화 완료:', syncedUser.name);
+        } else {
+          // 동기화 실패 시 로컬 데이터 사용
+          console.log('⚠️ 서버 동기화 실패 (로컬 데이터 사용)');
+        }
+      } catch (syncError) {
+        console.log('⚠️ 서버 동기화 실패 (로컬 데이터 사용):', syncError);
+        // 동기화 실패해도 로컬 데이터는 계속 사용
+      }
+      
     } catch (error) {
       console.error('사용자 정보 로드 실패:', error);
       setDebugInfo('사용자 정보 로드 실패');
@@ -121,15 +162,15 @@ const SettingsScreen = () => {
       >
         <View style={styles.header}>
           <View style={styles.headerTop}>
-            <View style={styles.titleContainer}>
-              <View style={[styles.titleIcon, { backgroundColor: colors.PRIMARY.DEFAULT + '20' }]}>
-                <Feather 
-                  name="settings" 
-                  size={24} 
-                  color={colors.PRIMARY.DEFAULT} 
-                />
-              </View>
-              <Text style={[styles.modernTitle, { color: themeColors.text }]}>설정</Text>
+          <View style={styles.titleContainer}>
+            <View style={[styles.titleIcon, { backgroundColor: colors.PRIMARY.DEFAULT + '20' }]}>
+              <Feather 
+                name="settings" 
+                size={24} 
+                color={colors.PRIMARY.DEFAULT} 
+              />
+            </View>
+            <Text style={[styles.modernTitle, { color: themeColors.text }]}>설정</Text>
             </View>
             <TouchableOpacity
               style={[styles.refreshButton, refreshing && styles.refreshButtonDisabled]}
@@ -160,9 +201,11 @@ const SettingsScreen = () => {
                   />
                 </View>
                 <View style={styles.userDetails}>
-                  <Text style={[styles.modernUserName, { color: themeColors.text }]}>{user.name}님</Text>
+                  <Text style={[styles.modernUserName, { color: themeColors.text }]}>
+                    {user.name}님 ({user.role === 'parent' ? '보호자' : '자녀'})
+                  </Text>
                   <Text style={[styles.modernUserType, { color: isDark ? '#888' : '#666' }]}>
-                    {user.role === 'parent' ? '부모' : '자식'} 계정
+                    {user.role === 'parent' ? '보호자' : '자녀'} 계정
                   </Text>
                   {/* 🔥 그룹명 표시 */}
                   {user.group_name && (
@@ -177,7 +220,7 @@ const SettingsScreen = () => {
                   )}
                 </View>
               </View>
-              {user?.role === 'parent' && user.group_id && (
+              {user?.role === 'parent' && user.user_id && (
                 <TouchableOpacity
                   style={[styles.modernQrButton, { backgroundColor: colors.PRIMARY.DEFAULT }]}
                   onPress={() => setShowQRModal(true)}
@@ -220,7 +263,7 @@ const SettingsScreen = () => {
             <Text style={[styles.modernSectionTitle, { color: themeColors.text }]}>기기 등록</Text>
           </View>
           
-          {/* 디스펜서 QR 스캔 (부모 계정만) */}
+          {/* 디스펜서 QR 스캔 (보호자 계정만) */}
           {user?.role === 'parent' && (
             <View style={[styles.modernDeviceCard, { 
               backgroundColor: themeColors.card,
@@ -248,9 +291,9 @@ const SettingsScreen = () => {
                       <Text style={[styles.deviceDescription, { color: isDark ? '#888' : '#666' }]}>
                         디스펜서를 연결하여 약을 관리하세요
                       </Text>
-                      {user.k_uid && (
+                      {user.machine_id && (
                         <Text style={[styles.registeredIndicator, { color: colors.SUCCESS.DEFAULT }]}>
-                          ✅ 등록완료: {maskConnectID(user.k_uid)}
+                          ✅ 등록완료: {maskConnectID(user.machine_id)}
                         </Text>
                       )}
                     </View>
@@ -267,7 +310,7 @@ const SettingsScreen = () => {
             </View>
           )}
 
-          {/* 🔥 디스펜서 등록 상태 표시 (부모 계정만) - TODO: 기기 등록 API 추가 필요 */}
+          {/* 🔥 디스펜서 등록 상태 표시 (보호자 계정만) - TODO: 기기 등록 API 추가 필요 */}
           {user?.role === 'parent' && false && (
             <View style={[styles.modernStatusCard, { 
               backgroundColor: themeColors.card,
@@ -420,11 +463,11 @@ const SettingsScreen = () => {
         </TouchableOpacity>
       </ScrollView>
 
-      {user?.role === 'parent' && user.group_id && (
+      {user?.role === 'parent' && user.user_id && (
         <QRCodeModal
           visible={showQRModal}
           onClose={() => setShowQRModal(false)}
-          connectId={user.group_id}
+          connectId={user.user_id}
         />
       )}
     </SafeAreaView>

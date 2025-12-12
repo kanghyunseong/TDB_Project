@@ -3,13 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
   Dimensions,
   RefreshControl,
+  StatusBar
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useTheme, useFocusEffect } from '@react-navigation/native';
 import Icon from 'react-native-vector-icons/Feather';
 import { LineChart, BarChart } from 'react-native-chart-kit';
@@ -49,6 +50,7 @@ interface WeeklyStatsData {
 }
 
 const FamilyWeeklyStatsScreen: React.FC = () => {
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { colors: themeColors } = useTheme();
   const isDark = themeColors.background === '#1a1a1a';
@@ -470,7 +472,8 @@ const FamilyWeeklyStatsScreen: React.FC = () => {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top', 'left', 'right', 'bottom']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.PRIMARY.DEFAULT} />
                   <Text style={[styles.loadingText, { color: themeColors.text }]}>
@@ -482,9 +485,10 @@ const FamilyWeeklyStatsScreen: React.FC = () => {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
       {/* 헤더 */}
-      <View style={[styles.header, { backgroundColor: themeColors.card }]}>
+      <View style={[styles.header, { backgroundColor: themeColors.card, paddingTop: insets.top + 10 }]}>
         <TouchableOpacity 
           style={styles.backButton}
           onPress={() => navigation.goBack()}

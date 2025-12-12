@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator, TextInput, Platform, SafeAreaView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator, TextInput, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import { MainStackParamList, BottomTabParamList } from '../types/navigation';
 import colors from '../constants/colors';
 import { getMedicineSchedule, saveMedicineSchedule, deleteMedicine, getFamilyMembers, getMedicineList, deleteMedicineSchedule } from '../api/family';
+import { DrugInteractionValidator } from '../utils/drugInteractionValidator';
+import { getCurrentUser } from '../api/userStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Feather from 'react-native-vector-icons/Feather';
 import { DAYS, TIMES, createEmptySchedule, type Schedule, groupBySlot, TIME_LABELS, DAY_LABELS } from '../constants/schedule';
@@ -99,15 +102,26 @@ function MedicineScheduleScreen({ route, navigation }: Props) {
   // 슬롯별 그룹핑
   const groupedMedicines = useMemo(() => groupBySlot(medicines as (Medicine & { dispenserSlot: string | number })[]), [medicines]);
 
-  // 각 약의 스케줄도 미리 불러오기
+  // 각 약의 스케줄도 미리 불러오기 (병렬 처리로 최적화)
   useEffect(() => {
     const fetchSchedules = async () => {
+      const schedulePromises = medicines
+        .filter(med => med.medi_id && med.user_id)
+        .map(async (med) => {
+          try {
+            const schedule = await getMedicineSchedule(med.medi_id!, med.user_id!);
+            return { medi_id: med.medi_id!, schedule };
+          } catch (error) {
+            console.warn(`[MedicineScheduleScreen] ${med.name} 스케줄 조회 실패:`, error);
+            return { medi_id: med.medi_id!, schedule: null };
+          }
+        });
+      
+      const scheduleResults = await Promise.all(schedulePromises);
       const schedules: Record<string, MedicineSchedule | null> = {};
-      for (const med of medicines) {
-        if (med.medi_id && med.user_id) {
-          schedules[med.medi_id] = await getMedicineSchedule(med.medi_id, med.user_id);
-        }
-      }
+      scheduleResults.forEach(({ medi_id, schedule }) => {
+        schedules[medi_id] = schedule;
+      });
       setAllSchedules(schedules);
     };
     if (medicines.length > 0) fetchSchedules();
@@ -185,6 +199,71 @@ function MedicineScheduleScreen({ route, navigation }: Props) {
     }
 
     try {
+      const currentUser = await getCurrentUser();
+      if (!currentUser) {
+        throw new Error('사용자 정보를 찾을 수 없습니다.');
+      }
+      
+      const familyResponse = await getFamilyMembers();
+      if (!familyResponse.success || !familyResponse.data) {
+        throw new Error('가족 구성원 정보를 가져올 수 없습니다.');
+      }
+      
+      // 가족 전체 약물 목록 수집 (병렬 처리)
+      const medicinePromises = familyResponse.data.map(async (member) => {
+        try {
+          const medicineResponse = await getMedicineList(member.user_id);
+          if (medicineResponse.success && medicineResponse.data) {
+            return medicineResponse.data.map(medicine => ({
+              ...medicine,
+              ownerName: member.name,
+              ownerRole: member.role,
+              ownerId: member.user_id
+            }));
+          }
+          return [];
+        } catch (error) {
+          console.error(`약물 목록 조회 실패 (${member.name}):`, error);
+          return [];
+        }
+      });
+      
+      const medicineArrays = await Promise.all(medicinePromises);
+      const allFamilyMedicines = medicineArrays.reduce((acc, arr) => [...acc, ...arr], []);
+      
+      // 현재 약물 찾기
+      const currentMedicine = allFamilyMedicines.find(m => m.medi_id === medi_id);
+      if (!currentMedicine) {
+        throw new Error('약물 정보를 찾을 수 없습니다.');
+      }
+      
+      // 상호작용 검사 실행
+      if (allFamilyMedicines.length >= 2) {
+        const interactionResult = await DrugInteractionValidator.validateDrugInteractions(allFamilyMedicines);
+        
+        if (interactionResult.hasInteractions) {
+          const criticalCount = interactionResult.interactions.filter(i => i.severity === 'critical').length;
+          const majorCount = interactionResult.interactions.filter(i => i.severity === 'major').length;
+          
+          // 현재 약물과 관련된 상호작용만 필터링
+          const relevantInteractions = interactionResult.interactions.filter(
+            interaction => interaction.drugA === currentMedicine.name || interaction.drugB === currentMedicine.name
+          );
+          
+          if (relevantInteractions.length > 0) {
+            const severity = criticalCount > 0 ? 'critical' : majorCount > 0 ? 'major' : 'moderate';
+            const severityText = severity === 'critical' ? '심각한' : severity === 'major' ? '주요' : '중간';
+            
+            Alert.alert(
+              `⚠️ 약물 상호작용 발견`,
+              `${currentMedicine.name}과(와) 다른 약물 간 ${severityText} 상호작용이 발견되었습니다.\n\n스케줄 저장을 중단합니다.\n\n상호작용 약물:\n${relevantInteractions.map(i => `• ${i.drugA === currentMedicine.name ? i.drugB : i.drugA}`).join('\n')}`,
+              [{ text: '확인', style: 'default' }]
+            );
+            return; // 스케줄 저장 차단
+          }
+        }
+      }
+      
       const userJson = await AsyncStorage.getItem('@user');
       const user = userJson ? JSON.parse(userJson) : null;
       const mainUserId = user?.accountType === 'parent' ? user.id : user.parentUuid;
@@ -195,7 +274,12 @@ function MedicineScheduleScreen({ route, navigation }: Props) {
         text1: '저장 완료',
         text2: '약 스케줄이 저장되었습니다.'
       });
-      navigation.goBack();
+      
+      // 🔥 대시보드 새로고침을 위해 MainTabs로 이동하면서 refresh 플래그 전달
+      navigation.navigate('MainTabs', {
+        screen: 'Member',
+        params: { refresh: true }
+      });
     } catch (error) {
       console.error('스케줄 저장 실패:', error);
       Alert.alert('오류', '스케줄 저장에 실패했습니다.');
@@ -348,7 +432,7 @@ function MedicineScheduleScreen({ route, navigation }: Props) {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
       <ScrollView style={[styles.container, { backgroundColor: themeColors.background }]}>
         <View style={styles.header}>
           <Text style={[styles.title, { color: themeColors.text }]}>{medicineName}</Text>

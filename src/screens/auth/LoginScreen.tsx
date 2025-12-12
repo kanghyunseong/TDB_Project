@@ -1,5 +1,6 @@
 import React, {useState, useEffect} from 'react';
-import {StyleSheet, View, Text, SafeAreaView, TouchableOpacity} from 'react-native';
+import {StyleSheet, View, Text, TouchableOpacity} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import colors from '../../constants/colors';
 import { ScrollView } from 'react-native-gesture-handler';
 import InputField from '../../components/InputField';
@@ -54,24 +55,28 @@ const LoginScreen: React.FC = () => {
   const handleLogin = async () => {
     try {
       setIsLoading(true);
-      console.log('로그인 시도 전 입력값:', { id, password });
+      console.log('🔐 [로그인] 시도 - 입력 ID:', id);
       
       const response = await login(id, password);
-      console.log('로그인 응답:', response);
+      console.log('📥 [로그인] 서버 응답:', response);
       
       if (!response.success) {
-        console.log('로그인 실패:', response);
+        console.log('❌ [로그인] 실패:', response);
         throw new Error(response.error?.message || '로그인에 실패했습니다.');
       }
 
         // 사용자 정보 저장
       const responseData = response.data;
-      console.log('로그인 응답 데이터 구조:', responseData);
-      console.log('responseData.id:', responseData.id);
-      console.log('responseData.user_id:', responseData.user_id);
+      
+      // 🔥 ID 일치 확인
+      console.log('🔍 [로그인] ID 일치 확인:', {
+        입력한_ID: id,
+        서버_응답_ID: responseData.user_id,
+        일치여부: id === responseData.user_id
+      });
       
       const userData = {
-        user_id: responseData.user_id || responseData.id, // user_id가 없으면 id 사용
+        user_id: responseData.user_id,  // 🔥 user_id로 통일
         name: responseData.name,
         role: responseData.role,
         group_id: responseData.group_id,
@@ -82,7 +87,11 @@ const LoginScreen: React.FC = () => {
         took_today: 0 // 그룹 기반에서는 number
       };
 
-        console.log('저장할 사용자 정보:', userData);
+        console.log('💾 [로그인] 저장할 사용자 정보:', {
+          user_id: userData.user_id,
+          name: userData.name,
+          role: userData.role
+        });
         
         // AsyncStorage에 저장
         await AsyncStorage.setItem('@user', JSON.stringify(userData));
@@ -231,7 +240,7 @@ const LoginScreen: React.FC = () => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <Text style={styles.title}>Teddy Bear</Text>

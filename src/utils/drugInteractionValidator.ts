@@ -1,6 +1,27 @@
-import medicineData from '../assets/medicine.json';
-import tabletData from '../assets/tablet.json';
+// 🔥 JSON 파일 import 제거 (데이터베이스 사용)
+// import medicineData from '../assets/medicine.json';
+// import tabletData from '../assets/tablet.json';
 import { Medicine } from '../types/tdb';
+import { findMedicineMasterByName, findTabletMasterByName } from '../api/medicineMaster';
+
+// 🔥 서버 API를 통한 데이터 조회 (캐싱은 서버에서 처리)
+const getMedicineDataByName = async (medicineName: string) => {
+  try {
+    return await findMedicineMasterByName(medicineName);
+  } catch (error) {
+    console.error('🔥 [DrugInteraction] 약물 정보 조회 실패:', error);
+    return null;
+  }
+};
+
+const getTabletDataByName = async (tabletName: string) => {
+  try {
+    return await findTabletMasterByName(tabletName);
+  } catch (error) {
+    console.error('🔥 [DrugInteraction] 영양제 정보 조회 실패:', error);
+    return null;
+  }
+};
 
 // 상호작용 위험도 레벨
 export type InteractionSeverity = 'critical' | 'major' | 'moderate' | 'minor';
@@ -139,19 +160,96 @@ export class DrugInteractionValidator {
       severity: 'minor' as InteractionSeverity,
       description: '칼슘 흡수가 증가하여 과다 섭취 위험이 있습니다.',
       recommendation: '일일 권장량을 확인하고 적절한 용량을 유지하세요.'
+    },
+    {
+      drugs: ['디곡신', '칼슘'],
+      severity: 'critical' as InteractionSeverity,
+      description: '칼슘이 디곡신의 심장 독성을 증가시킬 수 있습니다.',
+      recommendation: '반드시 의사와 상담하세요. 칼슘 보충제 복용 시 디곡신 농도를 정기적으로 모니터링해야 합니다.'
+    },
+    {
+      drugs: ['리튬', '이뇨제'],
+      severity: 'critical' as InteractionSeverity,
+      description: '이뇨제가 리튬 배설을 감소시켜 리튬 중독 위험이 있습니다.',
+      recommendation: '리튬 농도를 정기적으로 모니터링하고, 이뇨제 복용 시 리튬 용량 조정이 필요할 수 있습니다. 반드시 의사와 상담하세요.'
+    },
+    {
+      drugs: ['항우울제', 'MAO억제제'],
+      severity: 'critical' as InteractionSeverity,
+      description: '세로토닌 증후군을 일으킬 수 있는 위험한 상호작용입니다.',
+      recommendation: 'MAO억제제 중단 후 최소 2주 이상 경과한 후 항우울제를 복용해야 합니다. 반드시 의사와 상담하세요.'
+    },
+    {
+      drugs: ['테트라사이클린', '칼슘'],
+      severity: 'major' as InteractionSeverity,
+      description: '칼슘이 테트라사이클린의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '테트라사이클린 복용 2시간 전 또는 4시간 후에 칼슘제를 복용하세요.'
+    },
+    {
+      drugs: ['테트라사이클린', '철분'],
+      severity: 'major' as InteractionSeverity,
+      description: '철분이 테트라사이클린의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '테트라사이클린 복용 2시간 전 또는 4시간 후에 철분제를 복용하세요.'
+    },
+    {
+      drugs: ['테트라사이클린', '마그네슘'],
+      severity: 'major' as InteractionSeverity,
+      description: '마그네슘이 테트라사이클린의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '테트라사이클린 복용 2시간 전 또는 4시간 후에 마그네슘제를 복용하세요.'
+    },
+    {
+      drugs: ['퀴놀론', '칼슘'],
+      severity: 'major' as InteractionSeverity,
+      description: '칼슘이 퀴놀론 계열 항생제의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '퀴놀론 항생제 복용 2시간 전 또는 4시간 후에 칼슘제를 복용하세요.'
+    },
+    {
+      drugs: ['퀴놀론', '철분'],
+      severity: 'major' as InteractionSeverity,
+      description: '철분이 퀴놀론 계열 항생제의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '퀴놀론 항생제 복용 2시간 전 또는 4시간 후에 철분제를 복용하세요.'
+    },
+    {
+      drugs: ['퀴놀론', '마그네슘'],
+      severity: 'major' as InteractionSeverity,
+      description: '마그네슘이 퀴놀론 계열 항생제의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '퀴놀론 항생제 복용 2시간 전 또는 4시간 후에 마그네슘제를 복용하세요.'
+    },
+    {
+      drugs: ['퀴놀론', '알루미늄'],
+      severity: 'major' as InteractionSeverity,
+      description: '알루미늄이 퀴놀론 계열 항생제의 흡수를 저해하여 항생제 효과가 감소할 수 있습니다.',
+      recommendation: '퀴놀론 항생제 복용 2시간 전 또는 4시간 후에 알루미늄 함유 제산제를 복용하세요.'
+    },
+    {
+      drugs: ['와파린', '비타민K'],
+      severity: 'critical' as InteractionSeverity,
+      description: '비타민K가 와파린의 항응고 효과를 감소시킬 수 있습니다.',
+      recommendation: '비타민K 함유 식품이나 보충제의 섭취를 일정하게 유지하고, 정기적인 혈액응고 검사(INR)를 받으세요. 의사와 상담하세요.'
+    },
+    {
+      drugs: ['아스피린', '메토트렉세이트'],
+      severity: 'major' as InteractionSeverity,
+      description: '아스피린이 메토트렉세이트의 배설을 감소시켜 독성 위험이 증가할 수 있습니다.',
+      recommendation: '메토트렉세이트 복용 중 아스피린 사용 시 의사와 상담하세요. 정기적인 혈액검사가 필요할 수 있습니다.'
+    },
+    {
+      drugs: ['디곡신', '이뇨제'],
+      severity: 'major' as InteractionSeverity,
+      description: '이뇨제로 인한 칼륨 감소가 디곡신 독성을 증가시킬 수 있습니다.',
+      recommendation: '칼륨 수치를 정기적으로 모니터링하고, 칼륨 보충이 필요할 수 있습니다. 의사와 상담하세요.'
     }
   ];
 
   /**
-   * 🔥 **메인 함수: 사용자의 모든 약물 간 상호작용 검사**
+   * 🔥 **빠른 상호작용 검사 (알려진 상호작용만 체크, API 호출 없음)**
    */
-  static async validateDrugInteractions(userMedicines: Medicine[]): Promise<InteractionValidationResult> {
-    console.log('🔍 [DrugInteraction] 상호작용 검사 시작:', userMedicines.length, '개 약물');
+  static async quickCheckKnownInteractions(userMedicines: Medicine[]): Promise<InteractionValidationResult> {
+    console.log('⚡ [DrugInteraction] 빠른 상호작용 검사 시작:', userMedicines.length, '개 약물');
     
     const interactions: DrugInteraction[] = [];
-    const recommendations: string[] = [];
     
-    // 🔥 1. 모든 약물 쌍에 대해 상호작용 검사
+    // 🔥 알려진 상호작용만 빠르게 체크 (API 호출 없음)
     for (let i = 0; i < userMedicines.length; i++) {
       for (let j = i + 1; j < userMedicines.length; j++) {
         const drugA = userMedicines[i];
@@ -163,29 +261,101 @@ export class DrugInteractionValidator {
         
         // 동일한 약물인 경우 스킵
         if (normalizedNameA === normalizedNameB) {
-          console.log(`🔍 [DrugInteraction] 동일한 약물이므로 스킵: ${drugA.name} === ${drugB.name}`);
           continue;
         }
         
-        console.log(`🔍 [DrugInteraction] 검사 중: ${drugA.name} vs ${drugB.name}`);
-        
-        const pairInteractions = await this.checkDrugPairInteraction(drugA, drugB);
-        interactions.push(...pairInteractions);
+        // 🔥 알려진 상호작용만 체크 (동기, 빠름)
+        const knownInteraction = this.checkKnownInteractions(drugA.name, drugB.name);
+        if (knownInteraction) {
+          interactions.push(knownInteraction);
+        }
       }
     }
     
-    // 🔥 2. 결과 분석
     const criticalCount = interactions.filter(i => i.severity === 'critical').length;
     const majorCount = interactions.filter(i => i.severity === 'major').length;
     const warningCount = criticalCount + majorCount;
     
-    // 🔥 3. 전체 위험도 평가
     let overallRisk: InteractionSeverity = 'minor';
     if (criticalCount > 0) overallRisk = 'critical';
     else if (majorCount > 0) overallRisk = 'major';
     else if (interactions.length > 0) overallRisk = 'moderate';
     
-    // 🔥 4. 권장사항 생성
+    console.log('⚡ [DrugInteraction] 빠른 검사 완료:', {
+      총상호작용: interactions.length,
+      심각한상호작용: criticalCount,
+      주요상호작용: majorCount
+    });
+    
+    return {
+      hasInteractions: interactions.length > 0,
+      interactions,
+      warningCount,
+      criticalCount,
+      recommendations: [],
+      overallRisk
+    };
+  }
+
+  /**
+   * 🔥 **메인 함수: 사용자의 모든 약물 간 상호작용 검사 (상세 검사)**
+   */
+  static async validateDrugInteractions(userMedicines: Medicine[]): Promise<InteractionValidationResult> {
+    console.log('🔍 [DrugInteraction] 상세 상호작용 검사 시작:', userMedicines.length, '개 약물');
+    
+    const interactions: DrugInteraction[] = [];
+    const recommendations: string[] = [];
+    
+    // 🔥 1. 알려진 상호작용 먼저 체크 (빠름)
+    const quickResult = await this.quickCheckKnownInteractions(userMedicines);
+    interactions.push(...quickResult.interactions);
+    
+    // 🔥 2. 모든 약물 쌍에 대해 상세 상호작용 검사 (API 호출 포함)
+    for (let i = 0; i < userMedicines.length; i++) {
+      for (let j = i + 1; j < userMedicines.length; j++) {
+        const drugA = userMedicines[i];
+        const drugB = userMedicines[j];
+        
+        // 🔥 약물 이름 정규화하여 중복 검사 방지
+        const normalizedNameA = this.normalizeDrugName(drugA.name);
+        const normalizedNameB = this.normalizeDrugName(drugB.name);
+        
+        // 동일한 약물인 경우 스킵
+        if (normalizedNameA === normalizedNameB) {
+          continue;
+        }
+        
+        // 🔥 알려진 상호작용은 이미 체크했으므로 스킵
+        const alreadyChecked = interactions.some(
+          i => (i.drugA === drugA.name && i.drugB === drugB.name) || 
+               (i.drugA === drugB.name && i.drugB === drugA.name)
+        );
+        
+        if (alreadyChecked) {
+          continue;
+        }
+        
+        try {
+          const pairInteractions = await this.checkDrugPairInteraction(drugA, drugB);
+          interactions.push(...pairInteractions);
+        } catch (error) {
+          console.warn(`⚠️ [DrugInteraction] 상세 검사 실패: ${drugA.name} vs ${drugB.name}`, error);
+        }
+      }
+    }
+    
+    // 🔥 3. 결과 분석
+    const criticalCount = interactions.filter(i => i.severity === 'critical').length;
+    const majorCount = interactions.filter(i => i.severity === 'major').length;
+    const warningCount = criticalCount + majorCount;
+    
+    // 🔥 4. 전체 위험도 평가
+    let overallRisk: InteractionSeverity = 'minor';
+    if (criticalCount > 0) overallRisk = 'critical';
+    else if (majorCount > 0) overallRisk = 'major';
+    else if (interactions.length > 0) overallRisk = 'moderate';
+    
+    // 🔥 5. 권장사항 생성
     if (criticalCount > 0) {
       recommendations.push('⚠️ 심각한 상호작용이 발견되었습니다. 즉시 의사와 상담하세요.');
     }
@@ -196,7 +366,7 @@ export class DrugInteractionValidator {
       recommendations.push('💡 복용 중인 약물이 많습니다. 정기적인 복약상담을 받으시기 바랍니다.');
     }
     
-    console.log('🎯 [DrugInteraction] 검사 완료:', {
+    console.log('🎯 [DrugInteraction] 상세 검사 완료:', {
       총상호작용: interactions.length,
       심각한상호작용: criticalCount,
       주요상호작용: majorCount,
@@ -225,24 +395,44 @@ export class DrugInteractionValidator {
   }
 
   /**
-   * 🔥 **두 약물 간 상호작용 검사**
+   * 🔥 **두 약물 간 상호작용 검사 (타임아웃 및 에러 처리 추가)**
    */
   private static async checkDrugPairInteraction(drugA: Medicine, drugB: Medicine): Promise<DrugInteraction[]> {
     const interactions: DrugInteraction[] = [];
     
-    // 1. 기존 알려진 상호작용 확인
-    const knownInteraction = this.checkKnownInteractions(drugA.name, drugB.name);
-    if (knownInteraction) {
-      interactions.push(knownInteraction);
+    try {
+      // 1. 기존 알려진 상호작용 확인 (동기, 빠름)
+      const knownInteraction = this.checkKnownInteractions(drugA.name, drugB.name);
+      if (knownInteraction) {
+        interactions.push(knownInteraction);
+      }
+      
+      // 2. medicine.json 데이터로 상호작용 검사 (타임아웃 적용)
+      try {
+        const medicineTimeout = new Promise<DrugInteraction[]>((resolve) => {
+          setTimeout(() => resolve([]), 3000); // 3초 타임아웃
+        });
+        const medicineCheck = this.checkMedicineDataInteractions(drugA, drugB);
+        const medicineInteractions = await Promise.race([medicineCheck, medicineTimeout]);
+        interactions.push(...medicineInteractions);
+      } catch (error) {
+        console.warn(`⚠️ [DrugInteraction] 의약품 상호작용 검사 실패: ${drugA.name} vs ${drugB.name}`, error);
+      }
+      
+      // 3. tablet.json 데이터로 상호작용 검사 (타임아웃 적용)
+      try {
+        const tabletTimeout = new Promise<DrugInteraction[]>((resolve) => {
+          setTimeout(() => resolve([]), 3000); // 3초 타임아웃
+        });
+        const tabletCheck = this.checkTabletDataInteractions(drugA, drugB);
+        const tabletInteractions = await Promise.race([tabletCheck, tabletTimeout]);
+        interactions.push(...tabletInteractions);
+      } catch (error) {
+        console.warn(`⚠️ [DrugInteraction] 영양제 상호작용 검사 실패: ${drugA.name} vs ${drugB.name}`, error);
+      }
+    } catch (error) {
+      console.error(`❌ [DrugInteraction] 상호작용 검사 중 오류: ${drugA.name} vs ${drugB.name}`, error);
     }
-    
-    // 2. medicine.json 데이터로 상호작용 검사
-    const medicineInteractions = await this.checkMedicineDataInteractions(drugA, drugB);
-    interactions.push(...medicineInteractions);
-    
-    // 3. tablet.json 데이터로 상호작용 검사 (영양제)
-    const tabletInteractions = await this.checkTabletDataInteractions(drugA, drugB);
-    interactions.push(...tabletInteractions);
     
     return interactions;
   }
@@ -254,8 +444,21 @@ export class DrugInteractionValidator {
     for (const interaction of this.KNOWN_INTERACTIONS) {
       const { drugs, severity, description, recommendation } = interaction;
       
-      const hasA = drugs.some(drug => drugA.includes(drug) || drug.includes(drugA));
-      const hasB = drugs.some(drug => drugB.includes(drug) || drug.includes(drugB));
+      // 🔥 정규화된 이름으로도 매칭하여 "칼슘정"과 "칼슘" 같은 경우도 감지
+      const normalizedA = this.normalizeDrugName(drugA);
+      const normalizedB = this.normalizeDrugName(drugB);
+      
+      const hasA = drugs.some(drug => {
+        const normalizedDrug = this.normalizeDrugName(drug);
+        return drugA.includes(drug) || drug.includes(drugA) || 
+               normalizedA.includes(normalizedDrug) || normalizedDrug.includes(normalizedA);
+      });
+      
+      const hasB = drugs.some(drug => {
+        const normalizedDrug = this.normalizeDrugName(drug);
+        return drugB.includes(drug) || drug.includes(drugB) || 
+               normalizedB.includes(normalizedDrug) || normalizedDrug.includes(normalizedB);
+      });
       
       if (hasA && hasB) {
         console.log(`🚨 [DrugInteraction] 알려진 상호작용 발견: ${drugA} + ${drugB}`);
@@ -275,89 +478,96 @@ export class DrugInteractionValidator {
   }
 
   /**
-   * 🔥 **medicine.json 데이터 기반 상호작용 검사**
+   * 🔥 **서버 API 데이터 기반 상호작용 검사 (의약품)**
    */
   private static async checkMedicineDataInteractions(drugA: Medicine, drugB: Medicine): Promise<DrugInteraction[]> {
     const interactions: DrugInteraction[] = [];
     
     try {
-      const medicines = medicineData as any[];
-      
-      // drugA 정보 찾기
-      const medicineA = medicines.find((med: any) => 
-        med['제품명 [ITEMNAME] ']?.includes(drugA.name) || 
-        drugA.name.includes(med['제품명 [ITEMNAME] '])
-      );
-      
-      // drugB 정보 찾기
-      const medicineB = medicines.find((med: any) => 
-        med['제품명 [ITEMNAME] ']?.includes(drugB.name) || 
-        drugB.name.includes(med['제품명 [ITEMNAME] '])
-      );
+      // 🔥 서버 API에서 약물 정보 조회
+      const [medicineA, medicineB] = await Promise.all([
+        getMedicineDataByName(drugA.name),
+        getMedicineDataByName(drugB.name)
+      ]);
       
       if (medicineA && medicineB) {
-        // 🔥 주요 필드들 검사
+        // 🔥 주요 필드들 검사 (여러 형식 지원)
         const fieldsToCheck = [
-          { field: '문항4(주의사항) [ATPNQESITM] ', name: '주의사항' },
-          { field: '문항5(상호작용) [INTRCQESITM] ', name: '상호작용' },
-          { field: '문항6(부작용) [SEQESITM] ', name: '부작용' }
+          { 
+            field: 'precautions', 
+            name: '주의사항', 
+            getValue: (m: any) => m.precautions || m.IFTKN_ATNT_MATR_CN || m.atpnQesitm || m.atpnWarnQesitm || '' 
+          },
+          { 
+            field: 'standard_spec', 
+            name: '기준규격', 
+            getValue: (m: any) => m.standard_spec || m.STDR_STND || '' 
+          },
+          { 
+            field: 'primary_function', 
+            name: '주요기능성', 
+            getValue: (m: any) => m.primary_function || m.PRIMARY_FNCLTY || m.efcyQesitm || '' 
+          }
         ];
         
-        for (const { field, name } of fieldsToCheck) {
-          const contentA = medicineA[field] || '';
-          const contentB = medicineB[field] || '';
+        for (const { field, name, getValue } of fieldsToCheck) {
+          const contentA = getValue(medicineA);
+          const contentB = getValue(medicineB);
           
-          const interaction = this.analyzeInteractionContent(
-            drugA.name, drugB.name, contentA, contentB, field
-          );
-          
-          if (interaction) {
-            interactions.push(interaction);
+          // 🔥 내용이 있을 때만 검사
+          if (contentA && contentB) {
+            const interaction = this.analyzeInteractionContent(
+              drugA.name, drugB.name, contentA, contentB, field
+            );
+            
+            if (interaction) {
+              interactions.push(interaction);
+            }
           }
         }
       }
     } catch (error) {
-      console.error('🔥 [DrugInteraction] medicine.json 검사 중 오류:', error);
+      console.error('🔥 [DrugInteraction] 서버 API 검사 중 오류:', error);
     }
     
     return interactions;
   }
 
   /**
-   * 🔥 **tablet.json 데이터 기반 상호작용 검사 (영양제)**
+   * 🔥 **서버 API 데이터 기반 상호작용 검사 (건강기능식품)**
    */
   private static async checkTabletDataInteractions(drugA: Medicine, drugB: Medicine): Promise<DrugInteraction[]> {
     const interactions: DrugInteraction[] = [];
     
     try {
-      const tablets = tabletData as any[];
-      
-      // 영양제 정보 찾기
-      const tabletA = tablets.find((tablet: any) => 
-        tablet.PRDLST_NM?.includes(drugA.name) || 
-        drugA.name.includes(tablet.PRDLST_NM)
-      );
-      
-      const tabletB = tablets.find((tablet: any) => 
-        tablet.PRDLST_NM?.includes(drugB.name) || 
-        drugB.name.includes(tablet.PRDLST_NM)
-      );
+      // 🔥 서버 API에서 영양제 정보 조회
+      const [tabletA, tabletB] = await Promise.all([
+        getTabletDataByName(drugA.name),
+        getTabletDataByName(drugB.name)
+      ]);
       
       if (tabletA && tabletB) {
-        // 🔥 IFTKN_ATNT_MATR_CN (복용시주의사항) 필드 검사
-        const contentA = tabletA.IFTKN_ATNT_MATR_CN || '';
-        const contentB = tabletB.IFTKN_ATNT_MATR_CN || '';
+        // 🔥 타입 단언을 사용하여 모든 필드 접근 가능하도록 처리
+        const tabletAAny = tabletA as any;
+        const tabletBAny = tabletB as any;
         
-        const interaction = this.analyzeInteractionContent(
-          drugA.name, drugB.name, contentA, contentB, 'IFTKN_ATNT_MATR_CN'
-        );
+        // 🔥 precautions (복용시주의사항) 필드 검사 (여러 형식 지원)
+        const contentA = tabletAAny.precautions || tabletAAny.IFTKN_ATNT_MATR_CN || '';
+        const contentB = tabletBAny.precautions || tabletBAny.IFTKN_ATNT_MATR_CN || '';
         
-        if (interaction) {
-          interactions.push(interaction);
+        // 🔥 내용이 있을 때만 검사
+        if (contentA && contentB) {
+          const interaction = this.analyzeInteractionContent(
+            drugA.name, drugB.name, contentA, contentB, 'IFTKN_ATNT_MATR_CN'
+          );
+          
+          if (interaction) {
+            interactions.push(interaction);
+          }
         }
         
         // 🔥 원료 성분 기반 상호작용 검사
-        const ingredientInteraction = this.checkIngredientInteraction(tabletA, tabletB);
+        const ingredientInteraction = this.checkIngredientInteraction(tabletAAny, tabletBAny);
         if (ingredientInteraction) {
           interactions.push(ingredientInteraction);
         }
@@ -380,19 +590,33 @@ export class DrugInteractionValidator {
     sourceField: string
   ): DrugInteraction | null {
     
+    // 🔥 내용이 없으면 검사 건너뛰기
+    if (!contentA || !contentB) {
+      return null;
+    }
+    
     // 🔥 패턴 매칭으로 상호작용 위험 요소 찾기
     for (const [category, patterns] of Object.entries(this.INTERACTION_PATTERNS)) {
       const { keywords, warnings } = patterns;
       
+      // 🔥 대소문자 무시 검색을 위해 소문자로 변환
+      const contentALower = contentA.toLowerCase();
+      const contentBLower = contentB.toLowerCase();
+      
       // drugA 내용에서 카테고리 키워드 찾기
-      const drugAMatches = keywords.some(keyword => contentA.includes(keyword));
-      const drugBMatches = keywords.some(keyword => contentB.includes(keyword));
+      const drugAMatches = keywords.some(keyword => 
+        contentALower.includes(keyword.toLowerCase())
+      );
+      const drugBMatches = keywords.some(keyword => 
+        contentBLower.includes(keyword.toLowerCase())
+      );
       
       // 둘 다 같은 카테고리면 잠재적 상호작용
       if (drugAMatches && drugBMatches) {
         // 경고 키워드 확인
         const hasWarnings = warnings.some(warning => 
-          contentA.includes(warning) || contentB.includes(warning)
+          contentALower.includes(warning.toLowerCase()) || 
+          contentBLower.includes(warning.toLowerCase())
         );
         
         if (hasWarnings) {
@@ -419,16 +643,22 @@ export class DrugInteractionValidator {
    * 🔥 **영양제 원료 성분 기반 상호작용 검사**
    */
   private static checkIngredientInteraction(tabletA: any, tabletB: any): DrugInteraction | null {
-    const ingredientsA = (tabletA.RAWMTRL_NM || '').toLowerCase();
-    const ingredientsB = (tabletB.RAWMTRL_NM || '').toLowerCase();
+    // 🔥 여러 형식 지원 (서버 API 필드명과 JSON 필드명 모두 지원)
+    const ingredientsA = ((tabletA.RAWMTRL_NM || tabletA.raw_materials || '') + '').toLowerCase();
+    const ingredientsB = ((tabletB.RAWMTRL_NM || tabletB.raw_materials || '') + '').toLowerCase();
+    
+    // 🔥 내용이 없으면 검사 건너뛰기
+    if (!ingredientsA || !ingredientsB) {
+      return null;
+    }
     
     // 🔥 중복 성분 확인 (과다 섭취 위험)
     const commonIngredients = this.findCommonIngredients(ingredientsA, ingredientsB);
     
     if (commonIngredients.length > 0) {
       return {
-        drugA: tabletA.PRDLST_NM,
-        drugB: tabletB.PRDLST_NM,
+        drugA: tabletA.PRDLST_NM || tabletA.name || '',
+        drugB: tabletB.PRDLST_NM || tabletB.name || '',
         severity: 'moderate',
         category: 'vitamin',
         description: `공통 성분(${commonIngredients.join(', ')})으로 인한 과다 섭취 위험이 있습니다.`,

@@ -116,7 +116,7 @@ const CLEANUP_PATTERNS = [
     description: '전각 소괄호 닫기'
   },
   
-  // 4. 로마숫자 통일
+  // 4. 로마숫자 통일 (모든 로마숫자 포함)
   {
     pattern: /Ⅰ/g,
     replacement: 'I',
@@ -136,6 +136,36 @@ const CLEANUP_PATTERNS = [
     pattern: /Ⅳ/g,
     replacement: 'IV',
     description: '로마숫자 IV 통일'
+  },
+  {
+    pattern: /Ⅴ/g,
+    replacement: 'V',
+    description: '로마숫자 V 통일'
+  },
+  {
+    pattern: /Ⅵ/g,
+    replacement: 'VI',
+    description: '로마숫자 VI 통일'
+  },
+  {
+    pattern: /Ⅶ/g,
+    replacement: 'VII',
+    description: '로마숫자 VII 통일'
+  },
+  {
+    pattern: /Ⅷ/g,
+    replacement: 'VIII',
+    description: '로마숫자 VIII 통일'
+  },
+  {
+    pattern: /Ⅸ/g,
+    replacement: 'IX',
+    description: '로마숫자 IX 통일'
+  },
+  {
+    pattern: /Ⅹ/g,
+    replacement: 'X',
+    description: '로마숫자 X 통일'
   },
   
   // 5. 특수문자 정리
@@ -162,7 +192,7 @@ const CLEANUP_PATTERNS = [
     description: '특수 공백 문자 정리'
   },
   
-  // 7. 아래첨자/위첨자 숫자 정리 (필요시)
+  // 7. 아래첨자/위첨자 숫자 정리 (모든 아래첨자 포함)
   {
     pattern: /₁/g,
     replacement: '1',
@@ -178,6 +208,41 @@ const CLEANUP_PATTERNS = [
     replacement: '3',
     description: '아래첨자 3을 일반 숫자로'
   },
+  {
+    pattern: /₄/g,
+    replacement: '4',
+    description: '아래첨자 4를 일반 숫자로'
+  },
+  {
+    pattern: /₅/g,
+    replacement: '5',
+    description: '아래첨자 5를 일반 숫자로'
+  },
+  {
+    pattern: /₆/g,
+    replacement: '6',
+    description: '아래첨자 6을 일반 숫자로'
+  },
+  {
+    pattern: /₇/g,
+    replacement: '7',
+    description: '아래첨자 7을 일반 숫자로'
+  },
+  {
+    pattern: /₈/g,
+    replacement: '8',
+    description: '아래첨자 8을 일반 숫자로'
+  },
+  {
+    pattern: /₉/g,
+    replacement: '9',
+    description: '아래첨자 9를 일반 숫자로'
+  },
+  {
+    pattern: /₀/g,
+    replacement: '0',
+    description: '아래첨자 0을 일반 숫자로'
+  },
   
   // 8. 여러 개의 연속된 공백을 하나로
   {
@@ -191,6 +256,35 @@ const CLEANUP_PATTERNS = [
     pattern: /^\s+|\s+$/g,
     replacement: '',
     description: '앞뒤 공백 제거'
+  },
+  
+  // 10. clean_medicine_json.py에서 가져온 추가 패턴들
+  // 10-1. 장식용 특수문자 제거
+  {
+    pattern: /[※★◆▶●■☆○□]/g,
+    replacement: '',
+    description: '장식용 특수문자 제거'
+  },
+  
+  // 10-2. 항목 번호 제거 (①~⑳)
+  {
+    pattern: /[\u2460-\u2473]/g,
+    replacement: '',
+    description: '항목 번호 제거 (①~⑳)'
+  },
+  
+  // 10-3. 회사 형태 제거
+  {
+    pattern: /\((주|사|유)\)/g,
+    replacement: '',
+    description: '회사 형태 제거 ((주)(사)(유))'
+  },
+  
+  // 10-4. 메타 정보 제거
+  {
+    pattern: /\[표\d+\]|<.*?>|\(그림\d+\)/g,
+    replacement: '',
+    description: '메타 정보 제거 ([표], <태그>, (그림))'
   }
 ];
 
@@ -232,8 +326,11 @@ function cleanObject(obj) {
 
 /**
  * JSON 파일을 정리하는 함수
+ * @param {string} inputPath - 입력 파일 경로
+ * @param {string} outputPath - 출력 파일 경로
+ * @param {boolean} removeFields - 불필요한 필드 제거 여부 (기본값: false)
  */
-async function cleanJsonFile(inputPath, outputPath) {
+async function cleanJsonFile(inputPath, outputPath, removeFields = false) {
   try {
     console.log(`📂 파일 읽는 중: ${inputPath}`);
     
@@ -244,7 +341,10 @@ async function cleanJsonFile(inputPath, outputPath) {
     const jsonData = JSON.parse(data);
     
     console.log('🧹 데이터 정리 중...');
-    const cleanedData = cleanObject(jsonData);
+    if (removeFields) {
+      console.log('   (불필요한 필드 제거 포함)');
+    }
+    const cleanedData = cleanObject(jsonData, removeFields);
     
     console.log('💾 정리된 파일 저장 중...');
     fs.writeFileSync(outputPath, JSON.stringify(cleanedData, null, 2), 'utf8');
@@ -258,6 +358,7 @@ async function cleanJsonFile(inputPath, outputPath) {
     
   } catch (error) {
     console.error(`❌ 에러 발생 (${inputPath}):`, error.message);
+    throw error; // 에러를 다시 throw하여 호출자가 처리할 수 있도록
   }
 }
 
@@ -381,12 +482,14 @@ async function main() {
   // 3. 파일 정리
   await cleanJsonFile(
     path.join(assetsDir, 'tablet.json'), 
-    path.join(assetsDir, 'tablet_cleaned.json')
+    path.join(assetsDir, 'tablet_cleaned.json'),
+    false  // 필드 제거 안함
   );
   
   await cleanJsonFile(
     path.join(assetsDir, 'medicine.json'), 
-    path.join(assetsDir, 'medicine_cleaned.json')
+    path.join(assetsDir, 'medicine_cleaned.json'),
+    false  // 필드 제거 안함
   );
   
   console.log('\n✅ 모든 작업 완료!');

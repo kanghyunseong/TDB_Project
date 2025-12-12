@@ -30,11 +30,33 @@ export const StockWarningBanner: React.FC<StockWarningBannerProps> = ({
 
   // 🔥 재고 상태 체크
   useEffect(() => {
+    // 🔥 medicines 배열이 변경되면 즉시 이전 경고 목록에서 삭제된 약물 제거 (동기 처리)
+    setWarningMedicines(prev => {
+      if (medicines.length === 0) {
+        return []; // 약물이 없으면 경고 목록 초기화
+      }
+      
+      // 현재 medicines 배열에 존재하는 약물만 유지
+      const medicineIds = new Set(medicines.map(m => m.medi_id));
+      const filtered = prev.filter(warning => medicineIds.has(warning.medicine.medi_id));
+      
+      if (filtered.length !== prev.length) {
+        console.log(`[StockWarningBanner] 삭제된 약물로 인한 경고 목록 즉시 업데이트: ${prev.length}개 → ${filtered.length}개`);
+      }
+      
+      return filtered;
+    });
+    
+    // 그 다음 비동기로 재고 상태 체크
     checkStockStatus();
   }, [medicines, familyMembers]);
 
   const checkStockStatus = async () => {
-    if (medicines.length === 0 || familyMembers.length === 0) return;
+    // 🔥 약물이나 가족 구성원이 없으면 경고 목록 초기화
+    if (medicines.length === 0 || familyMembers.length === 0) {
+      setWarningMedicines([]);
+      return;
+    }
 
     setIsLoading(true);
     try {
@@ -42,9 +64,23 @@ export const StockWarningBanner: React.FC<StockWarningBannerProps> = ({
         medicines,
         familyMembers
       );
-      setWarningMedicines(warningList);
+      
+      // 🔥 현재 medicines 배열에 존재하는 약물만 필터링 (삭제된 약물 제외)
+      // 🔥 medicines 배열의 medi_id 목록을 Set으로 변환하여 빠른 조회
+      const medicineIds = new Set(medicines.map(m => m.medi_id));
+      const validWarningList = warningList.filter(warning => {
+        const exists = medicineIds.has(warning.medicine.medi_id);
+        if (!exists) {
+          console.log(`[StockWarningBanner] 삭제된 약물 제외: ${warning.medicine.name} (${warning.medicine.medi_id})`);
+        }
+        return exists;
+      });
+      
+      console.log(`[StockWarningBanner] 재고 부족 약물: ${validWarningList.length}개 (전체 약물: ${medicines.length}개)`);
+      setWarningMedicines(validWarningList);
     } catch (error) {
       console.error('재고 상태 체크 에러:', error);
+      setWarningMedicines([]); // 에러 발생 시 경고 목록 초기화
     } finally {
       setIsLoading(false);
     }

@@ -7,12 +7,12 @@ import {
   ScrollView, 
   Alert, 
   ActivityIndicator, 
-  SafeAreaView, 
   TextInput,
   Platform,
-  KeyboardAvoidingView
+  KeyboardAvoidingView,
+  StatusBar
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { MainStackParamList } from '../types/navigation';
 import colors from '../constants/colors';
@@ -116,7 +116,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
         setUserAccountType(user.role);
         setCurrentUserId(user.user_id);
         
-        // 부모가 자식의 스케줄을 관리하는지 확인
+        // 보호자가 자녀의 스케줄을 관리하는지 확인
         if (user.role === 'parent' && memberId !== user.user_id) {
           setIsManagingOthersSchedule(true);
         }
@@ -132,11 +132,11 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
               // 권한 체크 로직
               const checkPermission = () => {
                 if (user.role === 'parent') {
-                  // 부모는 모든 영양제 스케줄 편집 가능
+                  // 보호자는 모든 영양제 스케줄 편집 가능
                   return true;
                 }
                 
-                // 자식인 경우 본인 영양제만 편집 가능
+                // 자녀인 경우 본인 영양제만 편집 가능
                 if (user.role === 'child') {
                   const targetUsers = foundSupplement.target_users;
                   
@@ -211,7 +211,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
           console.log('🔄 기존 doseCount를 시간대별로 분할:', data.doseCount);
         }
       } else {
-        // 🔥 자녀 계정이고 스케줄이 없는 경우 부모 설정값 조회
+        // 🔥 자녀 계정이고 스케줄이 없는 경우 보호자 설정값 조회
         if (userAccountType === 'child') {
           await loadParentTotalQuantity();
         }
@@ -225,7 +225,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
           text1: '스케줄을 불러오는데 실패했습니다.',
         });
       } else if (userAccountType === 'child') {
-        // 🔥 자녀 계정이고 404 에러인 경우 부모 설정값 조회
+        // 🔥 자녀 계정이고 404 에러인 경우 보호자 설정값 조회
         await loadParentTotalQuantity();
       }
     }
@@ -239,7 +239,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
       const user = JSON.parse(userJson);
       const parentUserId = user.parentUuid || user.id;
       
-      // 부모의 영양제 목록에서 같은 supplementId의 총 복용량 조회
+      // 보호자의 영양제 목록에서 같은 supplementId의 총 복용량 조회
       const parentSupplementsResponse = await getSupplementList(parentUserId);
       if (parentSupplementsResponse && Array.isArray(parentSupplementsResponse)) {
         const parentSupplement = parentSupplementsResponse.find(
@@ -248,11 +248,11 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
         
         if (parentSupplement?.totalQuantity) {
           setTotalQuantity(parentSupplement.totalQuantity);
-          console.log('🔥 부모 설정 총 복용량 로드:', parentSupplement.totalQuantity);
+          console.log('🔥 보호자 설정 총 복용량 로드:', parentSupplement.totalQuantity);
         }
       }
     } catch (error) {
-      console.error('🔥 부모 총 복용량 로드 실패:', error);
+      console.error('🔥 보호자 총 복용량 로드 실패:', error);
     }
   };
 
@@ -387,7 +387,8 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={colors.PRIMARY.DEFAULT} />
           <Text style={[styles.loadingText, { color: themeColors.text }]}>로딩 중...</Text>
@@ -397,13 +398,14 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.card }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={themeColors.card} />
       <KeyboardAvoidingView 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.container}
       >
         {/* 🔥 의약품과 동일한 헤더 */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: insets.top + 10, backgroundColor: themeColors.card }]}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
@@ -425,33 +427,46 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
             <Text style={styles.sectionTitle}>⚡ 빠른 설정</Text>
             <View style={styles.quickPatternButtons}>
               <TouchableOpacity 
-                style={[styles.quickButton, styles.allButton]} 
+                style={[styles.quickButton, styles.morningButton]} 
                 onPress={() => {
                   const newSchedule = { ...schedule };
+                  // 🔥 토글 방식: 현재 상태의 반대로 변경 (모든 요일)
+                  const isCurrentlyEnabled = newSchedule['mon']['morning'];
                   DAYS.forEach(day => {
-                    SUPPLEMENT_TIMES.forEach(time => {
-                      newSchedule[day][time] = true;
-                    });
+                    newSchedule[day]['morning'] = !isCurrentlyEnabled;
                   });
                   setSchedule(newSchedule);
                 }}
               >
-                <Text style={styles.quickButtonText}>매일</Text>
+                <Text style={styles.quickButtonText}>🌅 아침</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.quickButton, styles.weekdaysButton]} 
+                style={[styles.quickButton, styles.afternoonButton]} 
                 onPress={() => {
                   const newSchedule = { ...schedule };
-                  const weekdays: DayOfWeek[] = ['mon', 'tue', 'wed', 'thu', 'fri'];
+                  // 🔥 토글 방식: 현재 상태의 반대로 변경 (모든 요일)
+                  const isCurrentlyEnabled = newSchedule['mon']['lunch'];
                   DAYS.forEach(day => {
-                    SUPPLEMENT_TIMES.forEach(time => {
-                      newSchedule[day][time] = weekdays.includes(day);
-                    });
+                    newSchedule[day]['lunch'] = !isCurrentlyEnabled;
                   });
                   setSchedule(newSchedule);
                 }}
               >
-                <Text style={styles.quickButtonText}>평일만</Text>
+                <Text style={styles.quickButtonText}>☀️ 점심</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.quickButton, styles.eveningButton]} 
+                onPress={() => {
+                  const newSchedule = { ...schedule };
+                  // 🔥 토글 방식: 현재 상태의 반대로 변경 (모든 요일)
+                  const isCurrentlyEnabled = newSchedule['mon']['dinner'];
+                  DAYS.forEach(day => {
+                    newSchedule[day]['dinner'] = !isCurrentlyEnabled;
+                  });
+                  setSchedule(newSchedule);
+                }}
+              >
+                <Text style={styles.quickButtonText}>🌙 저녁</Text>
               </TouchableOpacity>
               <TouchableOpacity 
                 style={[styles.quickButton, styles.clearButton]} 
@@ -463,7 +478,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
           </View>
 
           {/* 총 복용량 설정 */}
-          {/* 🔥 자식 계정에서는 총 복용량 섹션 전체 숨김 */}
+          {/* 🔥 자녀 계정에서는 총 복용량 섹션 전체 숨김 */}
           {userAccountType === 'parent' && (
           <View style={styles.quantitySection}>
             <Text style={styles.sectionTitle}>💊 총 복용량</Text>
@@ -474,13 +489,13 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
               ]}
               value={totalQuantity}
                 onChangeText={isManagingOthersSchedule ? undefined : setTotalQuantity}
-                placeholder={isManagingOthersSchedule ? "부모 계정에서만 수정 가능" : "총 복용량을 입력하세요"}
+                placeholder={isManagingOthersSchedule ? "보호자 계정에서만 수정 가능" : "총 복용량을 입력하세요"}
               keyboardType="numeric"
                 editable={!isManagingOthersSchedule}
             />
               {isManagingOthersSchedule && (
               <Text style={styles.quantityNote}>
-                ℹ️ 총 복용량은 부모 계정에서만 수정할 수 있습니다
+                ℹ️ 총 복용량은 보호자 계정에서만 수정할 수 있습니다
               </Text>
             )}
           </View>
@@ -625,7 +640,7 @@ function SupplementScheduleEditScreen({ route, navigation }: Props) {
             <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
               <Text style={styles.saveButtonText}>저장</Text>
             </TouchableOpacity>
-            {/* 삭제 버튼 - 부모 계정만 */}
+            {/* 삭제 버튼 - 보호자 계정만 */}
             {userAccountType === 'parent' && (
               <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
                 <Text style={styles.deleteButtonText}>삭제</Text>
@@ -931,14 +946,17 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
-  allButton: {
-    backgroundColor: '#34C759',
+  morningButton: {
+    backgroundColor: '#FF9500', // 주황색 - 아침
   },
-  weekdaysButton: {
-    backgroundColor: '#007AFF',
+  afternoonButton: {
+    backgroundColor: '#FFD700', // 금색 - 점심
+  },
+  eveningButton: {
+    backgroundColor: '#5856D6', // 보라색 - 저녁
   },
   clearButton: {
-    backgroundColor: '#FF3B30',
+    backgroundColor: '#FF3B30', // 빨간색 - 초기화
   },
   quickButtonText: {
     color: '#ffffff',

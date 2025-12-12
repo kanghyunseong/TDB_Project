@@ -3,12 +3,12 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { MainStackParamList } from '../types/navigation';
 import colors from '../constants/colors';
@@ -75,52 +75,81 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
       console.log('itemData 상세:', itemData);
       
       // 이미 상세정보가 있는 경우 (검색에서 온 경우)
+      // 🔥 백업 파일 형식과 새 형식 모두 지원
+      
+      // 🔥 주요성분 필드: 여러 가능한 필드명 체크 (백업 파일에는 성분 필드가 없을 수 있음)
+      const ingredientsValue = (itemData["문항3(성분) [ITEMINGREDIENT] "] && itemData["문항3(성분) [ITEMINGREDIENT] "].trim()) || 
+                                (itemData["RAWMTRL_NM"] && itemData["RAWMTRL_NM"].trim()) || 
+                                (itemData["raw_materials"] && itemData["raw_materials"].trim()) || 
+                                (itemData["ITEMINGREDIENT"] && itemData["ITEMINGREDIENT"].trim()) ||
+                                (itemData["ingredients"] && itemData["ingredients"].trim()) ||
+                                '정보 없음';
+      
+      // 🔥 부작용 필드: 여러 가능한 필드명 체크 (빈 문자열도 체크)
+      const sideEffectsValue = (itemData["문항6(부작용) [SEQESITM] "] && itemData["문항6(부작용) [SEQESITM] "].trim()) || 
+                               (itemData["SEQESITM"] && itemData["SEQESITM"].trim()) || 
+                               (itemData["seQesitm"] && itemData["seQesitm"].trim()) || 
+                               (itemData["side_effects"] && itemData["side_effects"].trim()) ||
+                               (itemData["intrcQesitm"] && itemData["intrcQesitm"].trim()) || // 상호작용 정보도 부작용으로 포함
+                               '해당 정보는 현재 제공되지 않습니다';
+      
       const medicineDetail = {
-        name: itemData["제품명 [ITEMNAME] "] || itemName,
-        manufacturer: itemData["업체명 [ENTPNAME] "] || '정보 없음',
-        ingredients: [itemData["문항1(효능) [EFCYQESITM] "] || '정보 없음'],
-        usage: itemData["문항2(사용법) [USEMETHODQESITM] "] || '정보 없음',
-        precautions: [itemData["문항4(주의사항) [ATPNQESITM] "] || '정보 없음'],
-        sideEffects: [itemData["문항6(부작용) [SEQESITM] "] || '해당 정보는 현재 제공되지 않습니다'],
-        storage: itemData["문항7(보관법) [DEPOSITMETHODQESITM] "] || '해당 정보는 현재 제공되지 않습니다',
-        efficacy: itemData["문항1(효능) [EFCYQESITM] "] || '정보 없음',
+        name: itemData["제품명 [ITEMNAME] "] || itemData["PRDLST_NM"] || itemData["itemName"] || itemName,
+        manufacturer: itemData["업체명 [ENTPNAME] "] || itemData["BSSH_NM"] || itemData["entpName"] || '정보 없음',
+        ingredients: Array.isArray(ingredientsValue) ? ingredientsValue : [ingredientsValue],
+        usage: itemData["문항2(사용법) [USEMETHODQESITM] "] || itemData["NTK_MTHD"] || itemData["useMethodQesitm"] || '정보 없음',
+        precautions: [itemData["문항4(주의사항) [ATPNQESITM] "] || itemData["IFTKN_ATNT_MATR_CN"] || itemData["atpnQesitm"] || itemData["atpnWarnQesitm"] || '정보 없음'],
+        sideEffects: Array.isArray(sideEffectsValue) ? sideEffectsValue : [sideEffectsValue],
+        storage: itemData["문항7(보관법) [DEPOSITMETHODQESITM] "] || itemData["CSTDY_MTHD"] || itemData["depositMethodQesitm"] || '해당 정보는 현재 제공되지 않습니다',
+        efficacy: itemData["문항1(효능) [EFCYQESITM] "] || itemData["PRIMARY_FNCLTY"] || itemData["efcyQesitm"] || '정보 없음',
       };
       
       console.log('✅ 변환된 약 상세정보:', medicineDetail);
       setDetailData(medicineDetail);
       
     } else if (itemName) {
-      console.log('📞 로컬 JSON 파일에서 약 정보 검색 시작:', itemName);
+      console.log('📞 서버 API에서 약 정보 검색 시작:', itemName);
       
-      // 🔥 로컬 JSON 파일에서 검색
+      // 🔥 서버 API에서 검색 (데이터베이스 사용)
       try {
-        const medicineData = require('../assets/medicine.json');
-        console.log('📋 로컬 medicine.json 로드 완료');
-        
-        // 약 이름으로 검색 (부분 매칭)
-        const foundMedicine = medicineData.find((item: any) => 
-          item["제품명 [ITEMNAME] "]?.toLowerCase().includes(itemName.toLowerCase()) ||
-          item["제품명 [ITEMNAME] "]?.includes(itemName)
-        );
+        const { findMedicineMasterByName } = await import('../api/medicineMaster');
+        const foundMedicine = await findMedicineMasterByName(itemName);
         
         if (foundMedicine) {
-          console.log('✅ 로컬 JSON에서 약물 정보 찾음:', foundMedicine["제품명 [ITEMNAME] "]);
+          console.log('✅ 서버에서 약물 정보 찾음:', foundMedicine.name);
           
           const medicineDetail = {
-            name: foundMedicine["제품명 [ITEMNAME] "] || itemName,
-            manufacturer: foundMedicine["업체명 [ENTPNAME] "] || '정보 없음',
-            ingredients: [foundMedicine["문항1(효능) [EFCYQESITM] "] || '정보 없음'],
-            usage: foundMedicine["문항2(사용법) [USEMETHODQESITM] "] || '정보 없음',
-            precautions: [foundMedicine["문항4(주의사항) [ATPNQESITM] "] || '정보 없음'],
-            sideEffects: [foundMedicine["문항6(부작용) [SEQESITM] "] || '해당 정보는 현재 제공되지 않습니다'],
-            storage: foundMedicine["문항7(보관법) [DEPOSITMETHODQESITM] "] || '해당 정보는 현재 제공되지 않습니다',
-            efficacy: foundMedicine["문항1(효능) [EFCYQESITM] "] || '정보 없음',
+            name: foundMedicine.name || itemName,
+            manufacturer: foundMedicine.company_name || '정보 없음',
+            // 🔥 주요성분 필드: 여러 가능한 필드명 체크 (빈 문자열도 체크)
+            ingredients: (() => {
+              const medicine = foundMedicine as any;
+              const rawMaterials = foundMedicine.raw_materials || medicine.RAWMTRL_NM || medicine.ITEMINGREDIENT || '';
+              const ingredientsValue = (rawMaterials && rawMaterials.trim()) || '정보 없음';
+              return Array.isArray(ingredientsValue) ? ingredientsValue : [ingredientsValue];
+            })(),
+            usage: foundMedicine.intake_method || '정보 없음',
+            precautions: [foundMedicine.precautions || '정보 없음'],
+            // 🔥 부작용 필드: 여러 가능한 필드명 체크 (데이터베이스 필드 우선)
+            sideEffects: (() => {
+              const medicine = foundMedicine as any;
+              const sideEffectsValue = (foundMedicine.side_effects && foundMedicine.side_effects.trim()) ||  // 🔥 데이터베이스 필드 우선
+                                       (medicine.SEQESITM && medicine.SEQESITM.trim()) || 
+                                       (medicine.seQesitm && medicine.seQesitm.trim()) || 
+                                       (medicine["문항6(부작용) [SEQESITM] "] && medicine["문항6(부작용) [SEQESITM] "].trim()) ||
+                                       (medicine.side_effects && medicine.side_effects.trim()) ||
+                                       (medicine.intrcQesitm && medicine.intrcQesitm.trim()) || // 상호작용 정보도 부작용으로 포함
+                                       '해당 정보는 현재 제공되지 않습니다';
+              return Array.isArray(sideEffectsValue) ? sideEffectsValue : [sideEffectsValue];
+            })(),
+            storage: foundMedicine.storage_method || '해당 정보는 현재 제공되지 않습니다',
+            efficacy: foundMedicine.primary_function || '정보 없음',
           };
           
-          console.log('✅ 로컬 JSON으로 생성된 상세정보:', medicineDetail);
+          console.log('✅ 서버 API로 생성된 상세정보:', medicineDetail);
           setDetailData(medicineDetail);
         } else {
-          console.log('❌ 로컬 JSON에서 약물 정보를 찾을 수 없음');
+          console.log('❌ 서버에서 약물 정보를 찾을 수 없음');
           const noResultDetail = {
             name: itemName,
             manufacturer: '정보 없음',
@@ -135,7 +164,7 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
           setDetailData(noResultDetail);
         }
       } catch (error) {
-        console.error('❌ 로컬 JSON 파일 로드 실패:', error);
+        console.error('❌ 서버 API 호출 실패:', error);
         const errorDetail = {
           name: itemName,
           manufacturer: '정보 없음',
@@ -174,36 +203,30 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
       console.log('✅ 변환된 영양제 상세정보:', supplementDetail);
       setDetailData(supplementDetail);
     } else if (itemName) {
-      console.log('📞 로컬 JSON 파일에서 영양제 정보 검색 시작:', itemName);
+      console.log('📞 서버 API에서 영양제 정보 검색 시작:', itemName);
       
-      // 🔥 로컬 JSON 파일에서 검색
+      // 🔥 서버 API에서 검색 (데이터베이스 사용)
       try {
-        const supplementData = require('../assets/tablet.json');
-        console.log('📋 로컬 tablet.json 로드 완료');
-        
-        // 영양제 이름으로 검색 (부분 매칭)
-        const foundSupplement = supplementData.find((item: any) => 
-          item.PRDLST_NM?.toLowerCase().includes(itemName.toLowerCase()) ||
-          item.PRDLST_NM?.includes(itemName)
-        );
+        const { findTabletMasterByName } = await import('../api/medicineMaster');
+        const foundSupplement = await findTabletMasterByName(itemName);
         
         if (foundSupplement) {
-          console.log('✅ 로컬 JSON에서 영양제 정보 찾음:', foundSupplement.PRDLST_NM);
+          console.log('✅ 서버에서 영양제 정보 찾음:', foundSupplement.name);
           
           const supplementDetail = {
-            name: foundSupplement.PRDLST_NM || itemName,
-            manufacturer: foundSupplement.BSSH_NM || '정보 없음',
-            ingredients: [foundSupplement.RAWMTRL_NM || '정보 없음'],
+            name: foundSupplement.name || itemName,
+            manufacturer: foundSupplement.company_name || '정보 없음',
+            ingredients: [foundSupplement.raw_materials || '정보 없음'],
             usage: '제품 라벨의 권장 섭취량을 확인하세요',
-            precautions: [foundSupplement.IFTKN_ATNT_MATR_CN || '정보 없음'],
-            primaryFunction: foundSupplement.PRIMARY_FNCLTY || '정보 없음',
-            intakeMethod: foundSupplement.NTK_MTHD || '정보 없음',
+            precautions: [foundSupplement.precautions || '정보 없음'],
+            primaryFunction: foundSupplement.primary_function || '정보 없음',
+            intakeMethod: foundSupplement.intake_method || '정보 없음',
           };
           
-          console.log('✅ 로컬 JSON으로 생성된 영양제 상세정보:', supplementDetail);
+          console.log('✅ 서버 API로 생성된 영양제 상세정보:', supplementDetail);
           setDetailData(supplementDetail);
         } else {
-          console.log('❌ 로컬 JSON에서 영양제 정보를 찾을 수 없음');
+          console.log('❌ 서버에서 영양제 정보를 찾을 수 없음');
           const defaultDetail = {
             name: itemName,
             manufacturer: '정보 없음',
@@ -268,7 +291,7 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
@@ -288,7 +311,7 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
 
   if (error) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backButton}
@@ -312,7 +335,7 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backButton}
@@ -344,6 +367,8 @@ const ItemDetailScreen = ({ route, navigation }: Props) => {
             <>
               {renderInfoSection('효능・효과', detailData?.efficacy || '정보 없음')}
               {renderInfoSection('사용법', detailData?.usage || '정보 없음')}
+              {/* 🔥 주요성분 섹션 추가 */}
+              {renderInfoSection('주요 성분', detailData?.ingredients || ['정보 없음'])}
               {renderInfoSection('주의사항', detailData?.precautions || ['정보 없음'])}
               {renderInfoSection('부작용', detailData?.sideEffects || ['해당 정보는 현재 제공되지 않습니다'])}
               {renderInfoSection('보관법', detailData?.storage || '해당 정보는 현재 제공되지 않습니다')}

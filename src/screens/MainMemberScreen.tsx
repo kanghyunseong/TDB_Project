@@ -7,6 +7,8 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  StatusBar,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Feather';
@@ -83,15 +85,22 @@ function MainMemberScreen() {
     }, 1000);
   }, [markDoseComplete, refresh]);
 
-  // 대시보드 새로고침 핸들러
-  const handleDashboardRefresh = useCallback(() => {
+  // 대시보드 새로고침 핸들러 (약물 ID와 시간대 정보 전달)
+  const handleDashboardRefresh = useCallback((medicineId?: string, userId?: string, timeOfDay?: 'morning' | 'afternoon' | 'evening') => {
     refresh();
+    // 🔥 약물 ID와 시간대 정보가 있으면 메인 홈 화면에도 알림 (이벤트 전달)
+    if (medicineId && userId && timeOfDay) {
+      // 메인 홈 화면에서 상태를 업데이트할 수 있도록 이벤트 발생
+      // 실제로는 navigation이나 전역 상태를 통해 전달해야 하지만,
+      // 현재 구조에서는 refresh만 호출하여 간접적으로 업데이트
+      console.log(`[MainMemberScreen] 복용 상태 업데이트: ${medicineId}, ${userId}, ${timeOfDay}`);
+    }
   }, [refresh]);
 
   // 로딩 상태
   if (isLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.PRIMARY.DEFAULT} />
           <Text style={[styles.loadingText, { color: themeColors.text }]}>
@@ -105,7 +114,7 @@ function MainMemberScreen() {
   // 에러 상태
   if (error) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <SafeAreaView style={[styles.container, { backgroundColor: themeColors.background }]} edges={['top']}>
         <View style={styles.errorContainer}>
           <Icon name="alert-circle" size={48} color={colors.DANGER.DEFAULT} />
           <Text style={[styles.errorTitle, { color: themeColors.text }]}>

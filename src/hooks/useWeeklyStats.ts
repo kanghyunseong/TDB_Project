@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiClient } from '../api/client';
 import { API_ENDPOINTS } from '../constants/api';
+import { API_TIMEOUTS, DEBOUNCE_DELAYS } from '../constants/timeouts';
 import { WeeklyStats } from '../types/member';
 import { FamilyMember } from '../api/family';
 import Toast from 'react-native-toast-message';
@@ -22,11 +23,12 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
   });
 
   const calculateWeeklyStats = useCallback(async () => {
-    console.log('📊 [useWeeklyStats] 시작 - 가족 구성원:', familyMembers.length, '명');
+    if (__DEV__) {
+      console.log('[useWeeklyStats] 시작:', familyMembers.length, '명');
+    }
 
     // 🔥 가족 구성원이 없으면 빈 상태로 설정하고 종료
     if (familyMembers.length === 0) {
-      console.log('📊 [useWeeklyStats] 가족 구성원 없음, 기본값 설정');
     setWeeklyStats({
       familyCompletionRate: 0,
       thisWeekDoses: 0,
@@ -39,18 +41,13 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
     
     try {
       setWeeklyStats(prev => ({ ...prev, isLoading: true }));
-      console.log('📊 [useWeeklyStats] 주간 통계 계산 시작');
-
-      // 🔥 타임아웃 설정 (10초)
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('API 호출 타임아웃')), 10000);
-      });
 
       // 구성원별 주간 통계 조회 (실제 API 사용)
       const statsPromises = familyMembers.map(async (member: FamilyMember) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUTS.LONG);
+        
         try {
-          console.log(`📊 [${member.name}] 주간 통계 API 호출 시작`);
-          
           // 이번 주 시작 날짜 계산 (월요일)
           const today = new Date();
           const dayOfWeek = today.getDay();
@@ -61,14 +58,13 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
           
           // 실제 구현된 dose-history API 사용
           const encodedUserId = encodeURIComponent(member.user_id);
-          const apiCall = apiClient.get(`${API_ENDPOINTS.DOSE_HISTORY.WEEKLY_STATS}/${encodedUserId}`, {
+          const response = await apiClient.get(`${API_ENDPOINTS.DOSE_HISTORY.WEEKLY_STATS}/${encodedUserId}`, {
             params: { start_date: startDateStr },
-            timeout: 5000 // 5초 타임아웃
+            timeout: API_TIMEOUTS.SHORT,
+            signal: controller.signal, // 🔥 AbortController 사용
           });
-
-          const response = await Promise.race([apiCall, timeoutPromise]) as any;
           
-          console.log(`📊 [${member.name}] 주간 통계 응답:`, response.data);
+          clearTimeout(timeoutId);
           
           if (response.data?.success && response.data?.data) {
             const data = response.data.data;
@@ -82,11 +78,23 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
             };
           }
           
-          console.warn(`⚠️ [${member.name}] 응답 데이터 없음`);
+          if (__DEV__) {
+            console.warn(`[useWeeklyStats] ${member.name} 응답 데이터 없음`);
+          }
+          clearTimeout(timeoutId);
           return null;
           
         } catch (error) {
-          console.warn(`❌ [${member.name}] 주간 통계 조회 실패:`, error);
+          clearTimeout(timeoutId);
+          
+          // AbortError는 타임아웃으로 처리
+          if (error instanceof Error && error.name === 'AbortError') {
+            if (__DEV__) {
+              console.warn(`[useWeeklyStats] ${member.name} 타임아웃`);
+            }
+          } else if (__DEV__) {
+            console.warn(`[useWeeklyStats] ${member.name} 조회 실패:`, error);
+          }
           return null;
         }
       });
@@ -94,10 +102,7 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
       const memberWeeklyStats = await Promise.all(statsPromises.map(p => p.catch(e => null)));
       const validStats = memberWeeklyStats.filter((stats: any): stats is any => stats !== null);
 
-      console.log('📊 [useWeeklyStats] 유효한 통계 데이터:', validStats.length, '/', familyMembers.length);
-
       if (validStats.length === 0) {
-        console.log('📊 [useWeeklyStats] 유효한 통계 없음, 기본값 설정');
         setWeeklyStats({
           familyCompletionRate: 0,
           thisWeekDoses: 0,
@@ -133,14 +138,6 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
       
       const trend = changePercent > 5 ? 'up' : changePercent < -5 ? 'down' : 'stable';
 
-      console.log('✅ [useWeeklyStats] 최종 통계:', {
-        familyCompletionRate,
-        thisWeekDoses,
-        lastWeekDoses,
-        trend,
-        validStatsCount: validStats.length
-      });
-
       setWeeklyStats({
         familyCompletionRate,
         thisWeekDoses,
@@ -150,7 +147,9 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
       });
 
     } catch (error) {
-      console.error('❌ [useWeeklyStats] 주간 통계 계산 중 오류:', error);
+      if (__DEV__) {
+        console.error('[useWeeklyStats] 오류:', error);
+      }
       
       // 🔥 에러 시에도 반드시 로딩 상태 해제
       setWeeklyStats({
@@ -173,17 +172,23 @@ export const useWeeklyStats = (familyMembers: FamilyMember[]) => {
     }
   }, [familyMembers]);
 
+  // 🔥 memberIds를 메모이제이션하여 무한 루프 방지
+  const memberIds = useMemo(() => 
+    familyMembers.map(m => m.user_id).join(','), 
+    [familyMembers]
+  );
+
   useEffect(() => {
     // 🔥 familyMembers가 실제로 변경된 경우에만 실행
     if (familyMembers.length === 0) return;
     
-    // 🔥 디바운싱: familyMembers 변경 후 1초 후에 실행
+    // 🔥 디바운싱: familyMembers 변경 후 실행
     const timer = setTimeout(() => {
-    calculateWeeklyStats();
-    }, 1000);
+      calculateWeeklyStats();
+    }, DEBOUNCE_DELAYS.DEFAULT); // 🔥 상수 사용
 
     return () => clearTimeout(timer);
-  }, [familyMembers.length, familyMembers.map(m => m.user_id).join(',')]); // 길이와 ID만 의존하여 불필요한 재실행 방지
+  }, [familyMembers.length, memberIds, calculateWeeklyStats]); // 🔥 메모이제이션된 memberIds와 calculateWeeklyStats 사용
 
   return {
     weeklyStats,
